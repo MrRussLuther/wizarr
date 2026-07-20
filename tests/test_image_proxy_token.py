@@ -7,11 +7,14 @@ disclose the media server's admin credentials or the internal upstream URL.
 
 import base64
 import json
+from urllib.parse import unquote_plus
 
 import pytest
 
 import app.services.image_proxy as image_proxy_module
 from app.services.image_proxy import ImageProxyService
+from app.services.media.emby import EmbyClient
+from app.services.media.jellyfin import JellyfinClient
 
 PLEX_TOKEN = "sUpErSeCrEtAdM1nT0k3n"  # test fixture, not a real credential
 POSTER_URL = (
@@ -257,3 +260,53 @@ def test_proxy_reattaches_credentials_server_side(app, client, session, monkeypa
     assert PLEX_TOKEN not in captured["url"]
     # ...and re-attached as a header from the MediaServer row
     assert captured["headers"].get("X-Plex-Token") == PLEX_TOKEN
+
+
+# ─── Movie-poster builders must not leak credentials ────────────────────────
+#
+# GHSA-gw9v-5c74-gwmr sibling path: the public, unauthenticated /cinema-posters
+# route returns get_movie_posters() output verbatim. Plex already proxies these,
+# but Jellyfin and Emby previously appended ?api_key=<admin token> to the raw
+# URL, disclosing the admin key to anyone — no invite required. Both must now go
+# through the opaque image proxy, exactly like Plex.
+
+JELLYFIN_EMBY_ADMIN_KEY = "jf-EmBy-AdM1n-K3y"  # test fixture, not a real credential
+
+
+class _FakeItemsResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def _poster_client(cls):
+    """Build a Jellyfin/Emby client without __init__ (no network, no DB)."""
+    client = object.__new__(cls)
+    client.url = "http://media.internal:8096"
+    client.token = JELLYFIN_EMBY_ADMIN_KEY
+    client.server_id = 1
+    client.get = lambda endpoint, params=None: _FakeItemsResponse(
+        {"Items": [{"Id": "movie-1"}, {"Id": "movie-2"}]}
+    )
+    return client
+
+
+@pytest.mark.parametrize("cls", [JellyfinClient, EmbyClient])
+def test_movie_posters_are_proxied_not_credential_bearing(app, cls):
+    """get_movie_posters must emit opaque proxy URLs, never a raw api_key URL."""
+    with app.app_context():
+        posters = _poster_client(cls).get_movie_posters(limit=10)
+
+    assert posters, "expected at least one poster URL"
+    for url in posters:
+        # Nothing recoverable by the (possibly anonymous) client...
+        assert JELLYFIN_EMBY_ADMIN_KEY not in url
+        assert "api_key" not in url.lower()
+        # ...and every poster goes through the opaque image proxy.
+        assert url.startswith("/image-proxy?token=")
+
+        # Defense in depth: opaque even to a client that decodes the token.
+        token = unquote_plus(url.split("token=", 1)[1])
+        assert JELLYFIN_EMBY_ADMIN_KEY.encode() not in _decode(token)
