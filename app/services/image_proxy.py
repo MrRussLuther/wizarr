@@ -2,7 +2,8 @@
 Secure image proxy service with opaque token-based access.
 
 This prevents SSRF attacks by not exposing the underlying URL to clients.
-Instead, we generate signed tokens that map to internal URLs.
+The upstream URL is encrypted with a key derived from SECRET_KEY, so the token
+handed to the browser is genuinely opaque rather than merely encoded.
 """
 
 import base64
@@ -14,9 +15,11 @@ import time
 from collections import OrderedDict
 from collections.abc import Hashable
 from typing import Any, ClassVar
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 import requests
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import current_app
 from requests.adapters import HTTPAdapter
 
@@ -49,7 +52,30 @@ class ImageProxyService:
     SERVER_HEADER_TTL = 300  # 5 minutes
     SESSION_CACHE_MAX_ENTRIES = 12
 
+    NONCE_BYTES = 12  # AES-GCM standard nonce length
+
+    # Query parameters that carry media-server credentials. plexapi's
+    # ``posterUrl`` (and the Jellyfin/Emby/Komga equivalents) return
+    # fully-authenticated artwork URLs, so the admin token routinely ends up in
+    # the URL we are handed. The proxy re-attaches the correct header from the
+    # MediaServer row at fetch time, so these are redundant here.
+    CREDENTIAL_QUERY_PARAMS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "x-plex-token",
+            "x-emby-token",
+            "x-mediabrowser-token",
+            "x-api-key",
+            "api_key",
+            "apikey",
+            "token",
+        }
+    )
+
     _token_cache_lock = threading.Lock()
+
+    # Derived encryption keys, memoised per secret
+    _cipher_key_cache: ClassVar[dict[bytes, bytes]] = {}
+    _cipher_key_lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
     def _get_secret(cls) -> bytes:
@@ -58,12 +84,66 @@ class ImageProxyService:
         return secret.encode() if isinstance(secret, str) else secret
 
     @classmethod
+    def _cipher_key(cls) -> bytes:
+        """Derive a 256-bit AES key from SECRET_KEY.
+
+        Domain-separated so the image-proxy key can never collide with any other
+        use of SECRET_KEY (Flask session cookies, etc.).
+        """
+        secret = cls._get_secret()
+
+        with cls._cipher_key_lock:
+            cached = cls._cipher_key_cache.get(secret)
+            if cached is not None:
+                return cached
+
+            key = hashlib.sha256(b"wizarr.image-proxy.v1\x00" + secret).digest()
+            cls._cipher_key_cache[secret] = key
+            return key
+
+    @classmethod
+    def _strip_credentials(cls, url: str) -> str:
+        """Remove embedded credentials from an upstream image URL.
+
+        Only called when we have a ``server_id``, because the proxy can then
+        re-attach the correct auth header from the MediaServer row at fetch time
+        (see :meth:`get_server_headers`). Without a ``server_id`` the URL is the
+        only way to authenticate, so it is left intact and protected solely by
+        the payload encryption.
+        """
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            return url
+
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        cleaned = [
+            (key, value)
+            for key, value in pairs
+            if key.lower() not in cls.CREDENTIAL_QUERY_PARAMS
+        ]
+
+        # Drop any ``user:pass@`` userinfo as well
+        netloc = parsed.netloc
+        if "@" in netloc:
+            netloc = netloc.rsplit("@", 1)[1]
+
+        if len(cleaned) == len(pairs) and netloc == parsed.netloc:
+            return url
+
+        return urlunsplit(
+            (parsed.scheme, netloc, parsed.path, urlencode(cleaned), parsed.fragment)
+        )
+
+    @classmethod
     def generate_token(cls, url: str, server_id: int | None = None) -> str:
         """
-        Generate a stateless signed token for an image URL.
+        Generate a stateless encrypted token for an image URL.
 
-        The token embeds the URL and server_id, signed with HMAC to prevent tampering.
-        This makes tokens work across multiple workers without shared state.
+        The token embeds the URL and server_id, encrypted with AES-GCM under a
+        key derived from SECRET_KEY. AES-GCM authenticates as well as encrypts,
+        so the token is both tamper-proof and opaque to the client. Being
+        stateless, it works across multiple workers without shared state.
 
         Args:
             url: The internal/media server URL to proxy
@@ -75,6 +155,10 @@ class ImageProxyService:
         current_time = time.time()
         bucket = int(current_time / cls.TOKEN_BUCKET_SECONDS)
 
+        # Never carry credentials we are able to reconstruct server-side
+        if server_id is not None:
+            url = cls._strip_credentials(url)
+
         # Create payload with URL, server_id, and expiry info
         payload = {
             "url": url,
@@ -82,19 +166,20 @@ class ImageProxyService:
             "bucket": bucket,
         }
 
-        # Encode payload as JSON then base64
-        payload_json = json.dumps(payload, separators=(",", ":"))
-        payload_b64 = (
-            base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
-        )
+        payload_json = json.dumps(payload, separators=(",", ":")).encode()
 
-        # Generate HMAC signature over the payload
-        signature = hmac.new(
-            cls._get_secret(), payload_b64.encode(), hashlib.sha256
-        ).hexdigest()[:16]  # Use 16 chars (64 bits) for compactness
+        key = cls._cipher_key()
 
-        # Token format: signature.payload
-        token = f"{signature}.{payload_b64}"
+        # Deterministic (SIV-style) nonce derived from the plaintext. Identical
+        # payloads therefore produce identical tokens, which keeps the token and
+        # image caches effective across renders, users and workers — the same
+        # property the previous bucketed HMAC scheme provided. A nonce is only
+        # ever reused for a byte-identical plaintext under the same key, so the
+        # AES-GCM nonce-reuse hazard does not apply.
+        nonce = hmac.new(key, payload_json, hashlib.sha256).digest()[: cls.NONCE_BYTES]
+        ciphertext = AESGCM(key).encrypt(nonce, payload_json, None)
+
+        token = base64.urlsafe_b64encode(nonce + ciphertext).decode().rstrip("=")
 
         # Also store in cache for faster lookups (optional optimization)
         with cls._token_cache_lock:
@@ -110,10 +195,10 @@ class ImageProxyService:
     @classmethod
     def validate_token(cls, token: str) -> dict | None:
         """
-        Validate a stateless signed token and return the URL mapping.
+        Validate a stateless encrypted token and return the URL mapping.
 
         Args:
-            token: The signed token to validate (format: signature.payload)
+            token: The token to validate (base64url of nonce + AES-GCM ciphertext)
 
         Returns:
             Dict with 'url' and 'server_id' if valid, None otherwise
@@ -132,29 +217,26 @@ class ImageProxyService:
                     "server_id": cached_mapping.get("server_id"),
                 }
 
-        # Parse token (signature.payload format)
-        parts = token.split(".", 1)
-        if len(parts) != 2:
-            return None
-
-        signature, payload_b64 = parts
-
-        # Verify HMAC signature
-        expected_sig = hmac.new(
-            cls._get_secret(), payload_b64.encode(), hashlib.sha256
-        ).hexdigest()[:16]
-
-        if not hmac.compare_digest(signature, expected_sig):
-            return None
-
-        # Decode payload
+        # Decrypt payload. AES-GCM rejects any tampering via its auth tag, so a
+        # separate signature check is unnecessary.
         try:
-            # Add back padding if needed
-            padding = (4 - len(payload_b64) % 4) % 4
-            payload_b64_padded = payload_b64 + ("=" * padding)
-            payload_json = base64.urlsafe_b64decode(payload_b64_padded).decode()
+            padding = (4 - len(token) % 4) % 4
+            raw = base64.urlsafe_b64decode(token + ("=" * padding))
+        except (ValueError, TypeError):
+            return None
+
+        if len(raw) <= cls.NONCE_BYTES:
+            return None
+
+        nonce, ciphertext = raw[: cls.NONCE_BYTES], raw[cls.NONCE_BYTES :]
+
+        try:
+            payload_json = AESGCM(cls._cipher_key()).decrypt(nonce, ciphertext, None)
             payload = json.loads(payload_json)
-        except (ValueError, json.JSONDecodeError):
+        except (InvalidTag, ValueError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(payload, dict) or "url" not in payload:
             return None
 
         # Verify token hasn't expired within the allowed validity window
