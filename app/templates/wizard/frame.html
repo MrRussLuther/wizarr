@@ -1,8 +1,30 @@
-{# templates/wizard/frame.html #}
+{# templates/wizard/frame.html - LOCAL OVERLAY, not upstream.
+
+   Stock renders the wizard on base.html's flat `bg-gray-50 dark:bg-gray-900`,
+   while the join page (user-plex-login.html) is a dark cinema treatment. Going
+   teaser -> join -> wizard therefore flipped between two unrelated looks. This
+   puts the wizard on the join page's gradient so the whole flow matches.
+
+   Two things make this safe rather than a naive background swap:
+
+   * The gradient utilities are already in the purged build because
+     user-plex-login.html uses them. Inventing new ones would silently no-op.
+   * `dark` on the wrapper is load-bearing, NOT cosmetic. Tailwind v4 emits
+     dark variants as `&:is(.dark *)` (descendant, class-based - main.css has
+     zero prefers-color-scheme rules), so this forces the dark treatment
+     regardless of the visitor's OS theme. Without it, a light-mode phone gets
+     `.wizard-content` text at text-gray-800 directly on the dark gradient,
+     because on mobile that element is transparent and full-bleed - only the
+     >=769px breakpoint gives it a card. It also switches the desktop card to
+     gray-800 and lets the frosted `.wizard-glass-container` progress bar read
+     as glass instead of sitting on flat gray.
+#}
 {% extends "base.html" %}
 {% block title %}
   Getting Started
 {% endblock title %}
 {% block main %}
-  <div class="overflow-x-hidden min-h-screen">{% include "wizard/steps.html" %}</div>
+  <div class="dark overflow-x-hidden min-h-screen bg-gradient-to-br from-slate-900 via-orange-900 to-slate-900">
+    {% include "wizard/steps.html" %}
+  </div>
 {% endblock main %}

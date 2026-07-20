@@ -122,9 +122,29 @@ class RecentlyAddedMediaWidget(WizardWidget):
         super().__init__("recently_added_media", template)
 
     def get_data(self, _server_type: str, **_kwargs) -> dict[str, Any]:
-        """Fetch recently added media from the server."""
+        """Fetch media from the server.
+
+        Local additions (russnas):
+          sort=rating          pick the highest-rated titles instead of newest
+          libraries="A,B"      restrict to an explicit library allowlist
+
+        The allowlist matters: every Library row in this install has enabled=1,
+        including personal ones (ShareX, Drone Videos, Action Photos, The Yard),
+        so without it "top rated" would put home video on the invite page.
+        """
         server_type = _server_type
         limit = _kwargs.get("limit", 6)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 6
+
+        sort = str(_kwargs.get("sort", "recent")).strip().lower()
+        allow = [
+            name.strip()
+            for name in str(_kwargs.get("libraries", "")).split(",")
+            if name.strip()
+        ]
 
         try:
             # Get media client for the server type
@@ -144,14 +164,80 @@ class RecentlyAddedMediaWidget(WizardWidget):
             if not client:
                 return {"items": [], "limit": limit}
 
-            # Get recently added items
-            recent_items = self._get_recent_items(client, limit)
+            if sort == "rating":
+                items = self._get_top_rated_items(client, limit, allow)
+                # Never fall back to an unfiltered list when an allowlist was
+                # given: a blank carousel is better than leaking personal media.
+                if not items and not allow:
+                    items = self._get_recent_items(client, limit)
+            else:
+                items = self._get_recent_items(client, limit)
 
-            return {"items": recent_items, "limit": limit}
+            return {"items": items, "limit": limit}
 
         except Exception:
             # Return empty data on any error to fail gracefully
             return {"items": [], "limit": limit}
+
+    def _get_top_rated_items(self, client, limit: int, allow: list[str]):
+        """Highest-rated movies/shows, restricted to an explicit library allowlist."""
+        try:
+            sections = client.server.library.sections()
+        except Exception as exc:
+            logging.debug(f"Top-rated: cannot list sections: {exc}")
+            return []
+
+        wanted = {name.lower() for name in allow}
+        pool = []
+
+        for section in sections:
+            if getattr(section, "type", None) not in ("movie", "show"):
+                continue
+            if wanted and str(getattr(section, "title", "")).lower() not in wanted:
+                continue
+
+            try:
+                results = section.search(
+                    sort="audienceRating:desc", maxresults=max(limit * 2, 10)
+                )
+            except Exception as exc:
+                logging.debug(f"Top-rated: search failed on {section.title}: {exc}")
+                continue
+
+            for item in results:
+                rating = getattr(item, "audienceRating", None) or getattr(
+                    item, "rating", None
+                )
+                if not rating:
+                    continue
+                try:
+                    pool.append((float(rating), item))
+                except (TypeError, ValueError):
+                    continue
+
+        pool.sort(key=lambda pair: pair[0], reverse=True)
+
+        items = []
+        for _rating, item in pool:
+            thumb = getattr(item, "posterUrl", None)
+            if not thumb:
+                continue
+            if thumb.startswith("/"):
+                thumb = f"{client.url.rstrip('/')}{thumb}"
+
+            items.append(
+                {
+                    "title": getattr(item, "title", "Unknown"),
+                    "year": getattr(item, "year", None),
+                    "thumb": client.generate_image_proxy_url(thumb),
+                    "type": str(getattr(item, "type", "unknown")).lower(),
+                    "added_at": None,
+                }
+            )
+            if len(items) >= limit:
+                break
+
+        return items
 
     def _get_recent_items(self, client, limit: int):
         """Extract recent items from media client."""
