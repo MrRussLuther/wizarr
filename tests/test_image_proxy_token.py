@@ -219,6 +219,42 @@ def test_expired_token_rejected(app, monkeypatch):
         assert ImageProxyService.validate_token(token) is None
 
 
+def test_cache_does_not_extend_token_lifetime(app, monkeypatch):
+    """Re-validating a token near expiry must not extend it via the token cache.
+
+    The cache-hit path used to trust its own insertion time, so a token
+    re-validated (and re-cached) just before expiry stayed servable for another
+    full TOKEN_EXPIRY. Expiry is now judged from the token's bucket instead.
+    """
+    with app.app_context():
+        token = ImageProxyService.generate_token(POSTER_URL, server_id=1)
+    ImageProxyService._token_cache.clear()
+
+    real_time = image_proxy_module.time.time
+
+    def _shifted(offset):
+        class _T:
+            @staticmethod
+            def time():
+                return real_time() + offset
+
+        return _T
+
+    # Validate just inside the window: still valid, and repopulates the cache.
+    near_expiry = ImageProxyService.TOKEN_EXPIRY - ImageProxyService.TOKEN_BUCKET_SECONDS
+    monkeypatch.setattr(image_proxy_module, "time", _shifted(near_expiry))
+    with app.app_context():
+        assert ImageProxyService.validate_token(token) is not None
+    assert token in ImageProxyService._token_cache  # cache was repopulated
+
+    # Past the real expiry: the cached entry must not keep serving the token,
+    # even though it was inserted only a few hours earlier.
+    past_expiry = ImageProxyService.TOKEN_EXPIRY + 5 * ImageProxyService.TOKEN_BUCKET_SECONDS
+    monkeypatch.setattr(image_proxy_module, "time", _shifted(past_expiry))
+    with app.app_context():
+        assert ImageProxyService.validate_token(token) is None
+
+
 # ─── End-to-end through the /image-proxy route ──────────────────────────────
 
 

@@ -207,6 +207,23 @@ class ImageProxyService:
         )
 
     @classmethod
+    def _bucket_within_expiry(cls, token_bucket: int | None) -> bool:
+        """Whether a token minted in ``token_bucket`` is still inside TOKEN_EXPIRY.
+
+        Single source of truth for token freshness, used by both the fast
+        token-cache path and the decrypt path. Deriving expiry from the token's
+        own bucket (not the cache insertion time) stops a token that is
+        re-validated and re-cached near end of life from having its lifetime
+        silently extended by another TOKEN_EXPIRY.
+        """
+        if token_bucket is None:
+            return False
+        bucket_diff = int(time.time() / cls.TOKEN_BUCKET_SECONDS) - token_bucket
+        if bucket_diff < 0:
+            return False
+        return bucket_diff * cls.TOKEN_BUCKET_SECONDS <= cls.TOKEN_EXPIRY
+
+    @classmethod
     def generate_token(cls, url: str, server_id: int | None = None) -> str:
         """
         Generate a stateless encrypted token for an image URL.
@@ -262,6 +279,7 @@ class ImageProxyService:
                 "url": url,
                 "timestamp": current_time,
                 "server_id": server_id,
+                "bucket": bucket,
             }
             cls._cleanup_token_cache_locked()
 
@@ -281,16 +299,16 @@ class ImageProxyService:
         if not token:
             return None
 
-        # Check cache first for performance (optional optimization)
+        # Check cache first for performance (optional optimization). Expiry is
+        # judged from the token's own bucket, not the cache insertion time, so a
+        # cached entry can never outlive the token it stands in for.
         with cls._token_cache_lock:
             cached_mapping = cls._token_cache.get(token)
-        if cached_mapping:
-            current_time = time.time()
-            if current_time - cached_mapping["timestamp"] < cls.TOKEN_EXPIRY:
-                return {
-                    "url": cached_mapping["url"],
-                    "server_id": cached_mapping.get("server_id"),
-                }
+        if cached_mapping and cls._bucket_within_expiry(cached_mapping.get("bucket")):
+            return {
+                "url": cached_mapping["url"],
+                "server_id": cached_mapping.get("server_id"),
+            }
 
         # Decrypt payload. AES-GCM rejects any tampering via its auth tag, so a
         # separate signature check is unnecessary.
@@ -322,17 +340,7 @@ class ImageProxyService:
             return None
 
         # Verify token hasn't expired within the allowed validity window
-        current_bucket = int(time.time() / cls.TOKEN_BUCKET_SECONDS)
-        token_bucket = payload.get("bucket")
-
-        if token_bucket is None:
-            return None
-
-        bucket_diff = current_bucket - token_bucket
-        if bucket_diff < 0:
-            return None
-
-        if bucket_diff * cls.TOKEN_BUCKET_SECONDS > cls.TOKEN_EXPIRY:
+        if not cls._bucket_within_expiry(payload.get("bucket")):
             return None
 
         # Cache the validated token for future requests
@@ -341,6 +349,7 @@ class ImageProxyService:
                 "url": payload["url"],
                 "timestamp": time.time(),
                 "server_id": payload.get("server_id"),
+                "bucket": payload.get("bucket"),
             }
             cls._cleanup_token_cache_locked()
 
