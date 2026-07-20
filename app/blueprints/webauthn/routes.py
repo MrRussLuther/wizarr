@@ -382,7 +382,11 @@ def authenticate_complete():
         session.pop("webauthn_challenge", None)
 
         if pending_2fa_user_id:
-            # 2FA mode - complete the authentication via the auth route
+            # 2FA mode - record that the passkey was actually verified for this
+            # account so auth.complete_2fa can require it. Without this marker
+            # complete_2fa trusts pending_2fa_user_id alone, which is set by the
+            # password check, letting a caller skip this ceremony entirely.
+            session["2fa_verified_user_id"] = pending_2fa_user_id
             return jsonify({"verified": True, "redirect": url_for("auth.complete_2fa")})
         # Usernameless mode - login directly
         from flask_login import login_user

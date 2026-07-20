@@ -72,6 +72,9 @@ def login():
 
             session["pending_2fa_user_id"] = account.id
             session["pending_2fa_remember"] = bool(request.form.get("remember"))
+            # Drop any stale verification marker from an earlier ceremony so it
+            # can't be reused to satisfy this new password step.
+            session.pop("2fa_verified_user_id", None)
             return render_template(
                 "login.html", show_2fa=True, username=username, has_passkeys=True
             )
@@ -124,6 +127,7 @@ def complete_2fa():
     from flask import session
 
     user_id = session.get("pending_2fa_user_id")
+    verified_user_id = session.get("2fa_verified_user_id")
     remember = session.get("pending_2fa_remember", False)
 
     if not user_id:
@@ -135,6 +139,23 @@ def complete_2fa():
             "login.html",
             error=_("No pending 2FA authentication"),
             has_passkeys=has_passkeys,
+        )
+
+    # Require that the passkey ceremony actually verified THIS account. The marker
+    # is only set by webauthn.authenticate_complete after a valid assertion, so a
+    # caller who has just the password (pending_2fa_user_id) cannot reach here.
+    if verified_user_id != user_id:
+        session.pop("2fa_verified_user_id", None)
+        from app.models import WebAuthnCredential
+
+        has_passkeys = WebAuthnCredential.query.first() is not None
+        return (
+            render_template(
+                "login.html",
+                error=_("Two-factor authentication required"),
+                has_passkeys=has_passkeys,
+            ),
+            401,
         )
 
     # Get the user account
@@ -150,10 +171,11 @@ def complete_2fa():
             "login.html", error=_("Authentication failed"), has_passkeys=has_passkeys
         )
 
-    # The actual WebAuthn verification will be handled by the existing WebAuthn route
-    # This route is called after successful WebAuthn authentication
+    # The passkey was verified by webauthn.authenticate_complete, which set the
+    # marker checked above. Clear all three keys so it can't be replayed.
     session.pop("pending_2fa_user_id", None)
     session.pop("pending_2fa_remember", None)
+    session.pop("2fa_verified_user_id", None)
 
     login_user(account, remember=remember)
     return redirect("/")
