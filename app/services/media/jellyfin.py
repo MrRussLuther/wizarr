@@ -661,7 +661,12 @@ class JellyfinClient(RestApiMixin):
         """Get movie poster URLs for background display."""
         poster_urls = []
         try:
-            # Get recent movies from all libraries
+            # Get recent movies from all libraries. Recursive is required: without
+            # it /Items only returns the library folders at the root, so this came
+            # back empty and the cinema background silently showed nothing. Safe to
+            # enable now only because the poster URLs below go through the image
+            # proxy; enabling it while the raw api_key URL was returned would have
+            # turned the latent /cinema-posters leak into an active one.
             response = self.get(
                 "/Items",
                 params={
@@ -671,6 +676,7 @@ class JellyfinClient(RestApiMixin):
                     "Limit": limit * 2,  # Get more than needed as fallback
                     "Fields": "PrimaryImageAspectRatio",
                     "HasPrimaryImage": True,
+                    "Recursive": True,
                 },
             ).json()
 

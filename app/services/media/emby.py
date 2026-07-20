@@ -136,7 +136,12 @@ class EmbyClient(JellyfinClient):
         """Get movie poster URLs for background display."""
         poster_urls = []
         try:
-            # Get recent movies from all libraries (Emby API is similar to Jellyfin)
+            # Get recent movies from all libraries (Emby API is similar to Jellyfin).
+            # Recursive is required: without it /Items only returns the library
+            # folders at the root, so this came back empty. Safe to enable only
+            # because the poster URLs below go through the image proxy; enabling it
+            # while the raw api_key URL was returned would have turned the latent
+            # /cinema-posters leak into an active one.
             response = self.get(
                 "/Items",
                 params={
@@ -146,6 +151,7 @@ class EmbyClient(JellyfinClient):
                     "Limit": limit * 2,  # Get more than needed as fallback
                     "Fields": "PrimaryImageAspectRatio",
                     "HasPrimaryImage": True,
+                    "Recursive": True,
                 },
             ).json()
 

@@ -331,6 +331,24 @@ def test_movie_posters_are_proxied_not_credential_bearing(app, cls):
         assert JELLYFIN_EMBY_ADMIN_KEY.encode() not in _decode(token)
 
 
+@pytest.mark.parametrize("cls", [JellyfinClient, EmbyClient])
+def test_movie_posters_query_is_recursive(app, cls):
+    """Without Recursive, /Items returns only root folders and no movies, so the
+    cinema background is silently empty. Guard that the query descends libraries."""
+    captured = {}
+
+    def fake_get(endpoint, params=None):
+        captured["params"] = params or {}
+        return _FakeItemsResponse({"Items": [{"Id": "movie-1"}]})
+
+    client = _poster_client(cls)
+    client.get = fake_get
+    with app.app_context():
+        client.get_movie_posters(limit=10)
+
+    assert captured["params"].get("Recursive") is True
+
+
 # ─── Deterministic-nonce (SIV) safety ───────────────────────────────────────
 
 
