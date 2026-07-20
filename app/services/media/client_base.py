@@ -117,6 +117,30 @@ class MediaClient(ABC):
         self.url = row.url  # type: ignore
         self.token = row.api_key  # type: ignore
 
+    def _skip_prune_on_empty_remote(
+        self, remote_is_empty: bool, known_users: list[User]
+    ) -> bool:
+        """Return True when an empty remote user set must NOT prune local users.
+
+        ``list_users`` runs automatically when the Users page loads. A
+        successful fetch that yields no users is far more likely to be a
+        transient upstream condition or an identity/filter mismatch than the
+        admin genuinely removing everyone, so pruning here would silently delete
+        every local user (and cascade to their activity sessions) with no
+        confirmation. When this returns True the caller should return its
+        existing users unchanged; explicit deletion from the UI is unaffected.
+        """
+        if remote_is_empty and known_users:
+            logging.warning(
+                "%s returned no users for server_id=%s but %d are known locally; "
+                "skipping prune to avoid deleting them.",
+                type(self).__name__,
+                getattr(self, "server_id", None),
+                len(known_users),
+            )
+            return True
+        return False
+
     def generate_image_proxy_url(self, image_url: str) -> str:
         """
         Generate a secure proxy URL for an image.

@@ -287,6 +287,59 @@ def scan_libraries_for_server(server: MediaServer):
     return client.libraries()
 
 
+def upsert_scanned_libraries(server: MediaServer, scan_result: Any) -> None:
+    """Reconcile a server's Library rows with a scan result. Does not commit.
+
+    ``scan_result`` is either a ``{external_id: name}`` dict or a list of names.
+    Existing rows keep their primary key (so invites keep referencing them) and
+    their ``enabled`` flag, which is the admin's saved default and what the
+    checkbox partial renders from. New libraries are inserted enabled. A library
+    that vanished from the scan is disabled if any invitation still references
+    it, otherwise deleted.
+
+    Shared by the invite modal scan and the server edit-form scan; each caller
+    keeps its own handling of a failed scan and its own commit/flush.
+    """
+    from app.models import Library, invite_libraries
+
+    pairs = (
+        scan_result.items()
+        if isinstance(scan_result, dict)
+        else [(name, name) for name in scan_result]
+    )
+
+    existing_libs = {
+        lib.external_id: lib
+        for lib in Library.query.filter_by(server_id=server.id).all()
+    }
+
+    incoming_ids: set[str] = set()
+    for fid, name in pairs:
+        fid = str(fid)
+        incoming_ids.add(fid)
+        if fid in existing_libs:
+            existing_libs[fid].name = name
+        else:
+            db.session.add(
+                Library(
+                    external_id=fid,
+                    name=name,
+                    server_id=server.id,
+                    enabled=True,
+                )
+            )
+
+    for ext, lib in existing_libs.items():
+        if str(ext) not in incoming_ids:
+            referenced = db.session.execute(
+                invite_libraries.select().where(invite_libraries.c.library_id == lib.id)
+            ).first()
+            if referenced:
+                lib.enabled = False
+            else:
+                db.session.delete(lib)
+
+
 def reset_user_password(db_id: int, new_password: str) -> bool:
     """Reset the password for a user on LDAP and/or their associated media server.
 

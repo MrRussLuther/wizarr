@@ -39,6 +39,7 @@ from app.services.media.service import (
     list_users_all_servers,
     list_users_for_server,
     scan_libraries_for_server,
+    upsert_scanned_libraries,
 )
 from app.services.update_check import (
     check_update_available,
@@ -449,13 +450,11 @@ def users_table():
     server_id = request.args.get("server")
     order = request.args.get("order", "name_asc")
     query_text = request.args.get("q", "").lower()
-    # single or multi delete
-    if uid := request.args.get("delete"):
-        delete_user(int(uid))
-    if multi := request.args.get("delete_multi"):
-        for uid in multi.split(","):
-            if uid.isdigit():
-                delete_user(int(uid))
+    # NOTE: deletion is intentionally NOT handled here. This is a GET route that
+    # renders the table, and performing deletes from query params on GET was a CSRF
+    # vector (a single top-level navigation to /users/table?delete_multi=... would
+    # fire it, and SameSite=Lax does not cover top-level GETs). The UI deletes via
+    # POST /users/bulk-delete, so nothing legitimate relied on the GET path.
 
     # Build DB query with eager load to keep session bound
     # Join with Invitation to get invited date for sorting
@@ -756,7 +755,7 @@ def update_user_libraries(db_id: int):
 def invite_scan_libraries():
     """Scan libraries for one or multiple selected servers and return grouped checkboxes."""
 
-    from app.models import Library, MediaServer, invite_libraries
+    from app.models import Library, MediaServer
 
     # Accept either multi-select checkboxes (server_ids) or legacy single server_id
     ids = request.form.getlist("server_ids") or []
@@ -775,50 +774,13 @@ def invite_scan_libraries():
     for server in servers:
         try:
             raw = scan_libraries_for_server(server)
-            items = raw.items() if isinstance(raw, dict) else [(n, n) for n in raw]
         except Exception as exc:
             logging.warning("Library scan failed for %s: %s", server.name, exc)
-            items = []
+            raw = []
 
-        # Upsert libraries: update existing rows, insert new ones, and preserve invite associations.
-        existing_libs = {
-            lib.external_id: lib
-            for lib in Library.query.filter_by(server_id=server.id).all()
-        }
-
-        incoming_ids: set[str] = set()
-        for fid, name in items:
-            fid = str(fid)
-            incoming_ids.add(fid)
-            if fid in existing_libs:
-                # Update existing row (preserve primary key so invites keep referencing it)
-                lib = existing_libs[fid]
-                lib.name = name
-                lib.enabled = True
-            else:
-                # New library - insert
-                lib = Library(
-                    external_id=fid,
-                    name=name,
-                    server_id=server.id,
-                    enabled=True,
-                )
-                db.session.add(lib)
-
-        # Handle libraries that used to exist but weren't returned by the server
-        for ext, lib in existing_libs.items():
-            if ext not in incoming_ids:
-                # If this library is referenced by any invitation, disable it to preserve associations
-                referenced = db.session.execute(
-                    invite_libraries.select().where(
-                        invite_libraries.c.library_id == lib.id
-                    )
-                ).first()
-                if referenced:
-                    lib.enabled = False
-                else:
-                    # Safe to remove since no invites reference it
-                    db.session.delete(lib)
+        # Upsert scanned libraries, preserving each row's enabled flag (the admin's
+        # saved default, rendered by the checkbox partial) and invite associations.
+        upsert_scanned_libraries(server, raw)
 
         # Flush so the temporary changes are visible for listing
         db.session.flush()

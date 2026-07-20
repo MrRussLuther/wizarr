@@ -484,32 +484,80 @@ def image_proxy():
     if cached_image:
         resp = Response(cached_image["data"], content_type=cached_image["content_type"])
         resp.headers["Cache-Control"] = "public, max-age=3600"
+        # Content-Type comes from the upstream server; stop the browser sniffing
+        # a different type off this public, cacheable route.
+        resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
 
-    # Validate token and get URL
-    mapping = ImageProxyService.validate_token(token)
-    if not mapping:
-        return Response(status=403)  # Invalid or expired token
-
-    url = mapping["url"]
-    server_id = mapping.get("server_id")
-
     try:
+        # Validate token and resolve the upstream URL. Any misconfiguration (an
+        # unset SECRET_KEY makes _get_secret fail closed) surfaces here as a 502
+        # rather than an uncaught 500.
+        mapping = ImageProxyService.validate_token(token)
+        if not mapping:
+            return Response(status=403)  # Invalid or expired token
+
+        url = mapping["url"]
+        server_id = mapping.get("server_id")
+
         # Prepare headers for authenticated requests (cached per server)
         headers = ImageProxyService.get_server_headers(server_id).copy()
 
-        # Fetch the image using a pooled session to reuse TCP/TLS handshakes
+        # Fetch the image using a pooled session to reuse TCP/TLS handshakes.
+        # Artwork endpoints return the image directly, so redirects are not
+        # followed: that keeps the authenticated header from being replayed to
+        # another host if an upstream ever returns a 3xx.
         session = ImageProxyService.get_session(url, server_id)
-        r = session.get(url, headers=headers, timeout=(5, 15))
-        r.raise_for_status()
-        content_type = r.headers.get("Content-Type", "image/jpeg")
-        image_data = r.content
+        max_bytes = ImageProxyService.IMAGE_PROXY_MAX_BYTES
+        with session.get(
+            url,
+            headers=headers,
+            timeout=(5, 15),
+            allow_redirects=False,
+            stream=True,
+        ) as r:
+            r.raise_for_status()
+
+            # Redirects are intentionally not followed; treat an unfollowed 3xx
+            # as an upstream failure rather than serving its body. Log it so blank
+            # artwork from a redirect-fronted upstream is diagnosable.
+            if r.status_code >= 300:
+                structlog.get_logger().warning(
+                    "image-proxy upstream returned a redirect; not following",
+                    status=r.status_code,
+                )
+                return Response(status=502)
+
+            # Reject early on an honest Content-Length, then enforce a hard byte
+            # cap while streaming so a large or malicious upstream cannot exhaust
+            # memory on this unauthenticated route.
+            declared_length = r.headers.get("Content-Length")
+            if declared_length is not None:
+                try:
+                    if int(declared_length) > max_bytes:
+                        return Response(status=502)
+                except ValueError:
+                    pass  # Unparseable header; the streaming cap below still applies.
+
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in r.iter_content(64 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    return Response(status=502)
+                chunks.append(chunk)
+
+            image_data = b"".join(chunks)
+            content_type = r.headers.get("Content-Type", "image/jpeg")
 
         # Cache the image
         ImageProxyService.cache_image(token, image_data, content_type)
 
         resp = Response(image_data, content_type=content_type)
         resp.headers["Cache-Control"] = "public, max-age=3600"
+        # Content-Type comes from the upstream server; stop the browser sniffing
+        # a different type off this public, cacheable route.
+        resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
 
     except requests.RequestException:

@@ -909,9 +909,13 @@ class PlexClient(MediaClient):
             admin_users, self.server.machineIdentifier
         )
 
+        known_users = self._get_server_users()
+        if self._skip_prune_on_empty_remote(not plex_users_by_email, known_users):
+            return known_users
+
         # Remove users no longer in Plex, add new users
         known_emails = set(plex_users_by_email.keys())
-        for db_user in self._get_server_users():
+        for db_user in known_users:
             if db_user.email not in known_emails:
                 db.session.delete(db_user)
 
