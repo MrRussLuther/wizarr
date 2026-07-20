@@ -78,6 +78,13 @@ def test_session_cookie_is_hardened(app):
     assert app.config["SESSION_COOKIE_HTTPONLY"] is True
 
 
+def test_remember_cookie_is_hardened(app):
+    # The remember-me cookie re-authenticates on its own, so it must carry the
+    # same SameSite/HttpOnly protection as the session cookie.
+    assert app.config["REMEMBER_COOKIE_SAMESITE"] == "Lax"
+    assert app.config["REMEMBER_COOKIE_HTTPONLY"] is True
+
+
 def test_login_sets_samesite_lax_cookie(client, session):
     """Behavioural check: the cookie the app actually sets carries SameSite=Lax."""
     admin = AdminAccount(username=USERNAME)
@@ -92,3 +99,32 @@ def test_login_sets_samesite_lax_cookie(client, session):
     set_cookie = resp.headers.get("Set-Cookie", "")
     assert "SameSite=Lax" in set_cookie
     assert "HttpOnly" in set_cookie
+
+
+def test_remember_cookie_carries_samesite_lax(client, session):
+    """A 'remember me' login must set the remember_token cookie SameSite=Lax + HttpOnly."""
+    admin = AdminAccount(username=USERNAME)
+    admin.set_password(PASSWORD)
+    session.add(admin)
+    session.commit()
+
+    resp = client.post(
+        "/login",
+        data={
+            "auth_method": "local",
+            "username": USERNAME,
+            "password": PASSWORD,
+            "remember": "1",
+        },
+    )
+    remember = next(
+        (
+            c
+            for c in resp.headers.getlist("Set-Cookie")
+            if c.startswith("remember_token=")
+        ),
+        "",
+    )
+    assert remember, "login with remember=1 should set the remember_token cookie"
+    assert "SameSite=Lax" in remember
+    assert "HttpOnly" in remember

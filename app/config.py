@@ -89,6 +89,14 @@ class BaseConfig:
     SESSION_COOKIE_SECURE = (
         os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
     )
+    # The Flask-Login "remember me" cookie is a standalone credential: it
+    # re-establishes the session on any request where the session cookie is
+    # absent. Flask-Login leaves SameSite unset by default (relying on the
+    # browser default), so harden it to match the session cookie above; without
+    # this a remembered admin's cross-site request would still authenticate.
+    REMEMBER_COOKIE_SAMESITE = "Lax"
+    REMEMBER_COOKIE_HTTPONLY = True
+    REMEMBER_COOKIE_SECURE = SESSION_COOKIE_SECURE
 
     # Babel / i18n
     LANGUAGES: ClassVar[dict[str, str]] = {
