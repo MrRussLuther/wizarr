@@ -449,13 +449,11 @@ def users_table():
     server_id = request.args.get("server")
     order = request.args.get("order", "name_asc")
     query_text = request.args.get("q", "").lower()
-    # single or multi delete
-    if uid := request.args.get("delete"):
-        delete_user(int(uid))
-    if multi := request.args.get("delete_multi"):
-        for uid in multi.split(","):
-            if uid.isdigit():
-                delete_user(int(uid))
+    # NOTE: deletion is intentionally NOT handled here. This is a GET route that
+    # renders the table, and performing deletes from query params on GET was a CSRF
+    # vector (a single top-level navigation to /users/table?delete_multi=... would
+    # fire it, and SameSite=Lax does not cover top-level GETs). The UI deletes via
+    # POST /users/bulk-delete, so nothing legitimate relied on the GET path.
 
     # Build DB query with eager load to keep session bound
     # Join with Invitation to get invited date for sorting

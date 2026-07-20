@@ -79,6 +79,16 @@ class BaseConfig:
     # Sessions
     SESSION_TYPE = "cachelib"  # Changed from 'filesystem' to 'cachelib'
     SESSION_CACHELIB = SESSION_CACHELIB  # Reference the module-level cache
+    # Session cookie hardening. Most state-changing endpoints here carry no CSRF
+    # token, so SameSite=Lax is the server-side control that stops the session
+    # cookie riding along on a cross-site POST/fetch. HttpOnly keeps it out of JS.
+    # Secure is env-gated (default off) so plain-HTTP self-hosted installs are not
+    # locked out; set SESSION_COOKIE_SECURE=true when serving over TLS.
+    SESSION_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SECURE = (
+        os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+    )
 
     # Babel / i18n
     LANGUAGES: ClassVar[dict[str, str]] = {
