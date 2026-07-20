@@ -45,6 +45,7 @@ class ImageProxyService:
 
     TOKEN_EXPIRY = 24 * 3600  # Tokens remain valid for 24 hours
     TOKEN_BUCKET_SECONDS = 3600  # Bucket tokens hourly to keep payload compact
+    TOKEN_CACHE_MAX_ENTRIES = 512  # Backstop against unbounded token-cache growth
     IMAGE_CACHE_EXPIRY = 3600  # 1 hour
     IMAGE_CACHE_MAX_ENTRIES = 300
     IMAGE_CACHE_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -77,6 +78,10 @@ class ImageProxyService:
     _cipher_key_cache: ClassVar[dict[bytes, bytes]] = {}
     _cipher_key_lock: ClassVar[threading.Lock] = threading.Lock()
 
+    # Cache for media-server hostnames, used to host-scope credential stripping
+    _server_url_cache: ClassVar[dict[int, dict[str, Any]]] = {}
+    _server_url_cache_lock: ClassVar[threading.Lock] = threading.Lock()
+
     @classmethod
     def _get_secret(cls) -> bytes:
         """Get the secret key for signing tokens."""
@@ -102,7 +107,35 @@ class ImageProxyService:
             return key
 
     @classmethod
-    def _strip_credentials(cls, url: str) -> str:
+    def _server_host(cls, server_id: int) -> str | None:
+        """Return the media server's hostname, cached, or ``None`` if unknown.
+
+        Used to host-scope credential stripping so we only strip a param when
+        the image URL targets the media server itself.
+        """
+        now = time.time()
+        with cls._server_url_cache_lock:
+            cached = cls._server_url_cache.get(server_id)
+            if cached and (now - cached["timestamp"] < cls.SERVER_HEADER_TTL):
+                return cached["host"]
+
+        from app.models import MediaServer  # Local import to avoid circulars
+
+        server = MediaServer.query.get(server_id)
+        host = None
+        if server and server.url:
+            try:
+                host = urlsplit(server.url).hostname
+            except ValueError:
+                host = None
+
+        with cls._server_url_cache_lock:
+            cls._server_url_cache[server_id] = {"host": host, "timestamp": now}
+
+        return host
+
+    @classmethod
+    def _strip_credentials(cls, url: str, server_host: str | None = None) -> str:
         """Remove embedded credentials from an upstream image URL.
 
         Only called when we have a ``server_id``, because the proxy can then
@@ -110,10 +143,20 @@ class ImageProxyService:
         (see :meth:`get_server_headers`). Without a ``server_id`` the URL is the
         only way to authenticate, so it is left intact and protected solely by
         the payload encryption.
+
+        Stripping is host-scoped: when ``server_host`` is known, credentials are
+        only removed if the URL targets that host. A param named ``token`` or
+        ``api_key`` on a foreign host (e.g. a podcast cover served from a CDN)
+        may be genuinely required and cannot be reconstructed from the
+        MediaServer row, so it is left for the encryption layer to keep opaque.
         """
         try:
             parsed = urlsplit(url)
         except ValueError:
+            return url
+
+        # Only touch URLs that point at the media server itself.
+        if server_host is not None and parsed.hostname != server_host:
             return url
 
         pairs = parse_qsl(parsed.query, keep_blank_values=True)
@@ -155,9 +198,11 @@ class ImageProxyService:
         current_time = time.time()
         bucket = int(current_time / cls.TOKEN_BUCKET_SECONDS)
 
-        # Never carry credentials we are able to reconstruct server-side
+        # Never carry credentials we are able to reconstruct server-side. Scope
+        # stripping to the media server's own host so foreign artwork URLs keep
+        # any param they legitimately need.
         if server_id is not None:
-            url = cls._strip_credentials(url)
+            url = cls._strip_credentials(url, cls._server_host(server_id))
 
         # Create payload with URL, server_id, and expiry info
         payload = {
@@ -225,6 +270,13 @@ class ImageProxyService:
         except (ValueError, TypeError):
             return None
 
+        # Reject non-canonical encodings. urlsafe_b64decode silently drops any
+        # non-alphabet bytes, so without this an attacker could splice junk into
+        # a valid token to mint unlimited distinct strings that all decrypt the
+        # same, each becoming its own _token_cache / _image_cache key.
+        if base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != token:
+            return None
+
         if len(raw) <= cls.NONCE_BYTES:
             return None
 
@@ -260,6 +312,7 @@ class ImageProxyService:
                 "timestamp": time.time(),
                 "server_id": payload.get("server_id"),
             }
+            cls._cleanup_token_cache_locked()
 
         return {"url": payload["url"], "server_id": payload.get("server_id")}
 
@@ -395,7 +448,7 @@ class ImageProxyService:
 
     @classmethod
     def _cleanup_token_cache_locked(cls) -> None:
-        """Remove expired tokens from cache."""
+        """Remove expired tokens, then bound the cache size."""
         current_time = time.time()
         expired = [
             token
@@ -404,6 +457,11 @@ class ImageProxyService:
         ]
         for token in expired:
             del cls._token_cache[token]
+
+        # Hard cap as a backstop against unbounded growth (dict preserves
+        # insertion order, so this evicts oldest-first).
+        while len(cls._token_cache) > cls.TOKEN_CACHE_MAX_ENTRIES:
+            del cls._token_cache[next(iter(cls._token_cache))]
 
     @classmethod
     def _evict_image_locked(cls, token: str) -> None:

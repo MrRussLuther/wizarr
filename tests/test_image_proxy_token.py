@@ -7,6 +7,7 @@ disclose the media server's admin credentials or the internal upstream URL.
 
 import base64
 import json
+from typing import ClassVar
 from urllib.parse import unquote_plus
 
 import pytest
@@ -35,9 +36,13 @@ def _clear_caches():
     """validate_token() short-circuits on the token cache, so isolate every test."""
     ImageProxyService._token_cache.clear()
     ImageProxyService._cipher_key_cache.clear()
+    ImageProxyService._server_url_cache.clear()
+    ImageProxyService._server_header_cache.clear()
     yield
     ImageProxyService._token_cache.clear()
     ImageProxyService._cipher_key_cache.clear()
+    ImageProxyService._server_url_cache.clear()
+    ImageProxyService._server_header_cache.clear()
 
 
 # ─── Confidentiality ────────────────────────────────────────────────────────
@@ -70,7 +75,7 @@ def test_token_does_not_disclose_admin_token(app):
         "token",
     ],
 )
-def test_known_credential_params_are_stripped(app, param):
+def test_known_credential_params_are_stripped(app, session, param):
     url = f"http://media.internal:8096/Items/1/Images/Primary?{param}=SECRETVALUE&maxWidth=300"
 
     with app.app_context():
@@ -84,7 +89,7 @@ def test_known_credential_params_are_stripped(app, param):
     assert "maxWidth=300" in mapping["url"]
 
 
-def test_userinfo_credentials_are_stripped(app):
+def test_userinfo_credentials_are_stripped(app, session):
     with app.app_context():
         token = ImageProxyService.generate_token(
             "http://admin:hunter2@plex.internal:32400/thumb.jpg", server_id=1
@@ -114,7 +119,7 @@ def test_url_kept_without_server_id_but_still_opaque(app):
 # ─── Integrity ──────────────────────────────────────────────────────────────
 
 
-def test_round_trip(app):
+def test_round_trip(app, session):
     with app.app_context():
         token = ImageProxyService.generate_token(POSTER_URL, server_id=7)
         ImageProxyService._token_cache.clear()
@@ -229,7 +234,7 @@ def test_proxy_reattaches_credentials_server_side(app, client, session, monkeypa
     captured = {}
 
     class _FakeResponse:
-        headers = {"Content-Type": "image/jpeg"}
+        headers: ClassVar = {"Content-Type": "image/jpeg"}
         content = b"\xff\xd8\xff\xe0-jpeg-bytes"
 
         def raise_for_status(self):
@@ -310,3 +315,159 @@ def test_movie_posters_are_proxied_not_credential_bearing(app, cls):
         # Defense in depth: opaque even to a client that decodes the token.
         token = unquote_plus(url.split("token=", 1)[1])
         assert JELLYFIN_EMBY_ADMIN_KEY.encode() not in _decode(token)
+
+
+# ─── Deterministic-nonce (SIV) safety ───────────────────────────────────────
+
+
+def test_distinct_payloads_produce_distinct_nonces(app):
+    """Different plaintext must yield a different nonce, so AES-GCM nonce reuse
+    across distinct payloads cannot happen. A regression to a constant nonce
+    (the classic GCM footgun) must fail here."""
+    nb = ImageProxyService.NONCE_BYTES
+    with app.app_context():
+        tok_a = ImageProxyService.generate_token(
+            "http://plex.internal:32400/library/metadata/1/thumb/1", server_id=1
+        )
+        ImageProxyService._token_cache.clear()
+        tok_b = ImageProxyService.generate_token(
+            "http://plex.internal:32400/library/metadata/2/thumb/1", server_id=1
+        )
+        ImageProxyService._token_cache.clear()
+        tok_a_other_server = ImageProxyService.generate_token(
+            "http://plex.internal:32400/library/metadata/1/thumb/1", server_id=2
+        )
+
+    assert tok_a != tok_b
+    assert _decode(tok_a)[:nb] != _decode(tok_b)[:nb]
+    # server_id is part of the payload, so it must move the nonce too
+    assert _decode(tok_a)[:nb] != _decode(tok_a_other_server)[:nb]
+
+
+# ─── Host-scoped credential stripping ────────────────────────────────────────
+
+
+def test_credentials_stripped_only_from_matching_host(app, session):
+    from app.models import MediaServer
+
+    server = MediaServer(
+        name="Plex",
+        server_type="plex",
+        url="http://plex.internal:32400",
+        api_key="k",
+    )
+    session.add(server)
+    session.commit()
+
+    url = "http://plex.internal:32400/thumb?X-Plex-Token=SECRET&maxWidth=300"
+    with app.app_context():
+        token = ImageProxyService.generate_token(url, server_id=server.id)
+        ImageProxyService._token_cache.clear()
+        mapping = ImageProxyService.validate_token(token)
+
+    assert "SECRET" not in mapping["url"]
+    assert "maxWidth=300" in mapping["url"]
+
+
+def test_credentials_kept_on_foreign_host(app, session):
+    """A token/api_key param on an external host (not the media server) may be
+    genuinely required, so it must survive; encryption keeps it opaque."""
+    from app.models import MediaServer
+
+    server = MediaServer(
+        name="ABS",
+        server_type="audiobookshelf",
+        url="http://abs.internal:13378",
+        api_key="abs-key",
+    )
+    session.add(server)
+    session.commit()
+
+    external = "https://cdn.example.com/podcast/cover.jpg?token=SIGNEDCDN&w=1"
+    with app.app_context():
+        token = ImageProxyService.generate_token(external, server_id=server.id)
+        ImageProxyService._token_cache.clear()
+        mapping = ImageProxyService.validate_token(token)
+
+    assert mapping["url"] == external
+
+
+# ─── Token canonicality & cache bounding ─────────────────────────────────────
+
+
+def test_non_canonical_token_aliases_rejected(app):
+    """urlsafe_b64decode silently drops junk bytes; without canonical-form
+    enforcement one valid token spawns unlimited accepted aliases, each its own
+    cache key (memory + upstream-fetch amplification on an unauthenticated route)."""
+    with app.app_context():
+        token = ImageProxyService.generate_token(POSTER_URL, server_id=1)
+        ImageProxyService._token_cache.clear()
+
+        # Baseline: the genuine token still validates.
+        assert ImageProxyService.validate_token(token) is not None
+
+        # Each alias decodes to the SAME ciphertext but is a different string.
+        for alias in (token + "!!!!", "~~~~" + token, token[:6] + "!!!!" + token[6:]):
+            ImageProxyService._token_cache.clear()
+            assert ImageProxyService.validate_token(alias) is None
+
+
+def test_token_cache_is_bounded(app):
+    with app.app_context():
+        for i in range(ImageProxyService.TOKEN_CACHE_MAX_ENTRIES + 50):
+            ImageProxyService.generate_token(
+                f"http://plex.internal:32400/thumb/{i}", server_id=1
+            )
+
+    assert (
+        len(ImageProxyService._token_cache) <= ImageProxyService.TOKEN_CACHE_MAX_ENTRIES
+    )
+
+
+# ─── Per-server-type header re-attachment ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "server_type,header_name,expected",
+    [
+        ("plex", "X-Plex-Token", "THE-KEY"),
+        ("jellyfin", "X-MediaBrowser-Token", "THE-KEY"),
+        ("emby", "X-Emby-Token", "THE-KEY"),
+        ("komga", "X-API-Key", "THE-KEY"),
+        ("audiobookshelf", "Authorization", "Bearer THE-KEY"),
+    ],
+)
+def test_get_server_headers_per_type(app, session, server_type, header_name, expected):
+    from app.models import MediaServer
+
+    server = MediaServer(
+        name=server_type,
+        server_type=server_type,
+        url="http://media.internal",
+        api_key="THE-KEY",
+    )
+    session.add(server)
+    session.commit()
+
+    with app.app_context():
+        headers = ImageProxyService.get_server_headers(server.id)
+
+    assert headers.get(header_name) == expected
+
+
+def test_get_server_headers_unknown_type_is_empty(app, session):
+    from app.models import MediaServer
+
+    server = MediaServer(
+        name="other",
+        server_type="navidrome",
+        url="http://other.internal",
+        api_key="THE-KEY",
+    )
+    session.add(server)
+    session.commit()
+
+    with app.app_context():
+        headers = ImageProxyService.get_server_headers(server.id)
+
+    assert headers == {}
