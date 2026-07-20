@@ -11,6 +11,7 @@ from typing import ClassVar
 from urllib.parse import unquote_plus
 
 import pytest
+from requests.structures import CaseInsensitiveDict
 
 import app.services.image_proxy as image_proxy_module
 from app.services.image_proxy import ImageProxyService
@@ -234,16 +235,27 @@ def test_proxy_reattaches_credentials_server_side(app, client, session, monkeypa
     captured = {}
 
     class _FakeResponse:
+        status_code = 200
         headers: ClassVar = {"Content-Type": "image/jpeg"}
         content = b"\xff\xd8\xff\xe0-jpeg-bytes"
 
         def raise_for_status(self):
             return None
 
+        def iter_content(self, chunk_size):
+            yield self.content
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
     class _FakeSession:
-        def get(self, url, headers=None, timeout=None):
+        def get(self, url, headers=None, timeout=None, **kwargs):
             captured["url"] = url
             captured["headers"] = headers or {}
+            captured["kwargs"] = kwargs
             return _FakeResponse()
 
     monkeypatch.setattr(
@@ -265,6 +277,8 @@ def test_proxy_reattaches_credentials_server_side(app, client, session, monkeypa
     assert PLEX_TOKEN not in captured["url"]
     # ...and re-attached as a header from the MediaServer row
     assert captured["headers"].get("X-Plex-Token") == PLEX_TOKEN
+    # Hardening: the proxied fetch does not follow redirects.
+    assert captured["kwargs"].get("allow_redirects") is False
 
 
 # ─── Movie-poster builders must not leak credentials ────────────────────────
@@ -471,3 +485,178 @@ def test_get_server_headers_unknown_type_is_empty(app, session):
         headers = ImageProxyService.get_server_headers(server.id)
 
     assert headers == {}
+
+
+# ─── Hardening: fail-closed secret, no redirects, response-size cap ──────────
+
+
+def test_missing_secret_key_fails_closed(app):
+    """With no SECRET_KEY the token is neither opaque nor unforgeable, so token
+    generation must raise rather than fall back to a public constant."""
+    original = app.config["SECRET_KEY"]
+    app.config["SECRET_KEY"] = ""
+    try:
+        with app.app_context(), pytest.raises(RuntimeError):
+            ImageProxyService.generate_token(
+                "http://plex.internal:32400/thumb.jpg", server_id=1
+            )
+    finally:
+        app.config["SECRET_KEY"] = original
+
+
+def _poster_server(session):
+    from app.models import MediaServer
+
+    server = MediaServer(
+        name="Plex",
+        server_type="plex",
+        url="http://plex.internal:32400",
+        api_key=PLEX_TOKEN,
+    )
+    session.add(server)
+    session.commit()
+    return server
+
+
+def test_proxy_rejects_oversize_upstream(app, client, session, monkeypatch):
+    """A body over the hard cap must be abandoned mid-stream (not fully
+    buffered), the connection released, and redirects must not be followed."""
+    server = _poster_server(session)
+
+    monkeypatch.setattr(ImageProxyService, "IMAGE_PROXY_MAX_BYTES", 32)
+    events = {"pulled": 0, "closed": False}
+    captured = {}
+
+    class _BigResponse:
+        status_code = 200
+        headers: ClassVar = CaseInsensitiveDict({"Content-Type": "image/jpeg"})
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            for _ in range(1000):  # far more than the 32-byte cap allows
+                events["pulled"] += 1
+                yield b"\x00" * 16
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            events["closed"] = True
+            return False
+
+    class _BigSession:
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            captured["kwargs"] = kwargs
+            return _BigResponse()
+
+    monkeypatch.setattr(
+        ImageProxyService,
+        "get_session",
+        classmethod(lambda cls, url, server_id: _BigSession()),
+    )
+
+    with app.app_context():
+        token = ImageProxyService.generate_token(
+            "http://plex.internal:32400/thumb.jpg", server_id=server.id
+        )
+
+    resp = client.get(f"/image-proxy?token={token}")
+
+    assert resp.status_code == 502
+    assert events["pulled"] < 10  # aborted mid-stream, not fully buffered
+    assert events["closed"] is True  # context manager released the connection
+    assert captured["kwargs"].get("allow_redirects") is False
+    assert captured["kwargs"].get("stream") is True
+
+
+def test_proxy_does_not_follow_redirects(app, client, session, monkeypatch):
+    """An unfollowed 3xx becomes a 502; the redirect body is never read/served."""
+    server = _poster_server(session)
+    served = {"body": False}
+
+    class _RedirectResponse:
+        status_code = 302
+        headers: ClassVar = CaseInsensitiveDict(
+            {"Content-Type": "text/html", "Location": "http://evil.example/"}
+        )
+
+        def raise_for_status(self):
+            return None  # requests does not raise on 3xx
+
+        def iter_content(self, chunk_size):
+            served["body"] = True
+            yield b"redirect-body"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        ImageProxyService,
+        "get_session",
+        classmethod(
+            lambda cls, url, server_id: type(
+                "_S", (), {"get": lambda s, *a, **k: _RedirectResponse()}
+            )()
+        ),
+    )
+
+    with app.app_context():
+        token = ImageProxyService.generate_token(
+            "http://plex.internal:32400/thumb.jpg", server_id=server.id
+        )
+
+    resp = client.get(f"/image-proxy?token={token}")
+
+    assert resp.status_code == 502
+    assert served["body"] is False
+
+
+def test_proxy_rejects_oversize_content_length(app, client, session, monkeypatch):
+    """An honest over-cap Content-Length is refused before the body is read."""
+    server = _poster_server(session)
+    monkeypatch.setattr(ImageProxyService, "IMAGE_PROXY_MAX_BYTES", 100)
+    events = {"pulled": 0}
+
+    class _ClResponse:
+        status_code = 200
+        headers: ClassVar = CaseInsensitiveDict(
+            {"Content-Type": "image/jpeg", "Content-Length": "500"}
+        )
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            events["pulled"] += 1
+            yield b"\x00" * 16
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        ImageProxyService,
+        "get_session",
+        classmethod(
+            lambda cls, url, server_id: type(
+                "_S", (), {"get": lambda s, *a, **k: _ClResponse()}
+            )()
+        ),
+    )
+
+    with app.app_context():
+        token = ImageProxyService.generate_token(
+            "http://plex.internal:32400/thumb.jpg", server_id=server.id
+        )
+
+    resp = client.get(f"/image-proxy?token={token}")
+
+    assert resp.status_code == 502
+    assert events["pulled"] == 0  # rejected on Content-Length before reading body

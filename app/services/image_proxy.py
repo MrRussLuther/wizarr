@@ -50,6 +50,7 @@ class ImageProxyService:
     IMAGE_CACHE_MAX_ENTRIES = 300
     IMAGE_CACHE_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
     IMAGE_CACHE_MAX_SINGLE_BYTES = 4 * 1024 * 1024  # Skip caching images >4 MB
+    IMAGE_PROXY_MAX_BYTES = 25 * 1024 * 1024  # Hard cap on a single upstream fetch
     SERVER_HEADER_TTL = 300  # 5 minutes
     SESSION_CACHE_MAX_ENTRIES = 12
 
@@ -84,8 +85,15 @@ class ImageProxyService:
 
     @classmethod
     def _get_secret(cls) -> bytes:
-        """Get the secret key for signing tokens."""
-        secret = current_app.config.get("SECRET_KEY", "wizarr-dev-secret")
+        """Return SECRET_KEY as bytes, failing closed if it is unset.
+
+        The token is only opaque and unforgeable while SECRET_KEY is secret, so
+        refuse to operate on a missing/empty key rather than fall back to a
+        publicly known constant (which would re-enable decryption and forgery).
+        """
+        secret = current_app.config.get("SECRET_KEY")
+        if not secret:
+            raise RuntimeError("SECRET_KEY is not configured")
         return secret.encode() if isinstance(secret, str) else secret
 
     @classmethod
