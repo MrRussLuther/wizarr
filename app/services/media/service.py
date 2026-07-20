@@ -294,8 +294,15 @@ def upsert_scanned_libraries(server: MediaServer, scan_result: Any) -> None:
     Existing rows keep their primary key (so invites keep referencing them) and
     their ``enabled`` flag, which is the admin's saved default and what the
     checkbox partial renders from. New libraries are inserted enabled. A library
-    that vanished from the scan is disabled if any invitation still references
-    it, otherwise deleted.
+    that vanished from the scan is disabled if any invitation still references it,
+    otherwise deleted, but only when the scan is authoritative.
+
+    Removal reconciliation is skipped when the scan returns nothing, or fewer
+    libraries than we already have on record. Plex's global-id source
+    (``plex.tv/api/v2/servers``) can transiently return a partial or empty
+    ``librarySections`` list, and trusting a short response would disable real
+    libraries and wipe the admin's saved invite defaults. Adds and name updates
+    still apply, so genuinely new libraries always show up.
 
     Shared by the invite modal scan and the server edit-form scan; each caller
     keeps its own handling of a failed scan and its own commit/flush.
@@ -307,6 +314,12 @@ def upsert_scanned_libraries(server: MediaServer, scan_result: Any) -> None:
         if isinstance(scan_result, dict)
         else [(name, name) for name in scan_result]
     )
+
+    # A scan that returns nothing must not mutate anything: Plex's global-id source
+    # can transiently return an empty librarySections list, and trusting it would
+    # disable or delete every real library and wipe the admin's invite defaults.
+    if not pairs:
+        return
 
     existing_libs = {
         lib.external_id: lib
@@ -328,6 +341,14 @@ def upsert_scanned_libraries(server: MediaServer, scan_result: Any) -> None:
                     enabled=True,
                 )
             )
+
+    # Only reconcile removals when the scan is authoritative. A scan that returns
+    # fewer libraries than we already have on record is treated as a partial (flaky)
+    # response and leaves existing rows untouched. This is the reported failure mode:
+    # a 12-library Plex came back as a 7-library scan and silently disabled the two
+    # libraries (Movies and TV Shows) the admin had kept as the invite default.
+    if len(incoming_ids) < len(existing_libs):
+        return
 
     for ext, lib in existing_libs.items():
         if str(ext) not in incoming_ids:

@@ -131,6 +131,57 @@ def test_newly_discovered_library_defaults_to_enabled(client, session):
     assert enabled["3"] is True
 
 
+def test_partial_scan_leaves_existing_libraries_untouched(client, session):
+    """A flaky plex.tv scan that returns fewer libraries than we hold must not disable
+    or delete the missing ones. Regression: a 12-library server came back as a
+    7-library scan and silently dropped Movies/TV Shows out of the invite default.
+    """
+    _login(client, session)
+    server = _server(session)
+    _libs(
+        session,
+        server,
+        {
+            "1": ("Movies", True),
+            "2": ("TV Shows", True),
+            "3": ("Home Video", False),
+            "4": ("Music", False),
+        },
+    )
+
+    # scan comes back short (2 of 4), omitting the enabled Movies/TV Shows
+    partial = {"3": "Home Video", "4": "Music"}
+    with patch(
+        "app.blueprints.admin.routes.scan_libraries_for_server",
+        return_value=partial,
+    ):
+        resp = client.post(
+            "/invite/scan-libraries", data={"server_ids": str(server.id)}
+        )
+    assert resp.status_code == 200
+
+    # nothing dropped, nothing re-toggled
+    assert _enabled_map(server.id) == {"1": True, "2": True, "3": False, "4": False}
+
+
+def test_empty_scan_is_a_noop(client, session):
+    """An empty scan result (total plex.tv failure) must not wipe the library table."""
+    _login(client, session)
+    server = _server(session)
+    _libs(session, server, {"1": ("Movies", True), "3": ("Home Video", False)})
+
+    with patch(
+        "app.blueprints.admin.routes.scan_libraries_for_server",
+        return_value={},
+    ):
+        resp = client.post(
+            "/invite/scan-libraries", data={"server_ids": str(server.id)}
+        )
+    assert resp.status_code == 200
+
+    assert _enabled_map(server.id) == {"1": True, "3": False}
+
+
 def test_legacy_settings_scan_does_not_delete_other_servers_libraries(client, session):
     """The legacy route owns only unbound rows; it must not touch real servers'."""
     _login(client, session)
