@@ -484,6 +484,9 @@ def image_proxy():
     if cached_image:
         resp = Response(cached_image["data"], content_type=cached_image["content_type"])
         resp.headers["Cache-Control"] = "public, max-age=3600"
+        # Content-Type comes from the upstream server; stop the browser sniffing
+        # a different type off this public, cacheable route.
+        resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
 
     try:
@@ -552,6 +555,9 @@ def image_proxy():
 
         resp = Response(image_data, content_type=content_type)
         resp.headers["Cache-Control"] = "public, max-age=3600"
+        # Content-Type comes from the upstream server; stop the browser sniffing
+        # a different type off this public, cacheable route.
+        resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
 
     except requests.RequestException:

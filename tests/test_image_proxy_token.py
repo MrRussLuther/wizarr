@@ -37,11 +37,13 @@ def _clear_caches():
     """validate_token() short-circuits on the token cache, so isolate every test."""
     ImageProxyService._token_cache.clear()
     ImageProxyService._cipher_key_cache.clear()
+    ImageProxyService._nonce_key_cache.clear()
     ImageProxyService._server_url_cache.clear()
     ImageProxyService._server_header_cache.clear()
     yield
     ImageProxyService._token_cache.clear()
     ImageProxyService._cipher_key_cache.clear()
+    ImageProxyService._nonce_key_cache.clear()
     ImageProxyService._server_url_cache.clear()
     ImageProxyService._server_header_cache.clear()
 
@@ -61,6 +63,12 @@ def test_token_does_not_disclose_admin_token(app):
     assert b"X-Plex-Token" not in raw
     assert b"plex.internal" not in raw
     assert b"library/metadata" not in raw
+
+
+def test_nonce_key_is_domain_separated_from_cipher_key(app):
+    """The SIV-style nonce PRF must not share key material with the AES cipher."""
+    with app.app_context():
+        assert ImageProxyService._nonce_key() != ImageProxyService._cipher_key()
 
 
 @pytest.mark.parametrize(
@@ -279,6 +287,9 @@ def test_proxy_reattaches_credentials_server_side(app, client, session, monkeypa
     assert captured["headers"].get("X-Plex-Token") == PLEX_TOKEN
     # Hardening: the proxied fetch does not follow redirects.
     assert captured["kwargs"].get("allow_redirects") is False
+    # Hardening: upstream-controlled Content-Type on a public, cacheable route
+    # must forbid MIME sniffing.
+    assert resp.headers.get("X-Content-Type-Options") == "nosniff"
 
 
 # ─── Movie-poster builders must not leak credentials ────────────────────────

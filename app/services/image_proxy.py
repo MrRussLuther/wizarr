@@ -75,8 +75,9 @@ class ImageProxyService:
 
     _token_cache_lock = threading.Lock()
 
-    # Derived encryption keys, memoised per secret
+    # Derived keys, memoised per secret
     _cipher_key_cache: ClassVar[dict[bytes, bytes]] = {}
+    _nonce_key_cache: ClassVar[dict[bytes, bytes]] = {}
     _cipher_key_lock: ClassVar[threading.Lock] = threading.Lock()
 
     # Cache for media-server hostnames, used to host-scope credential stripping
@@ -112,6 +113,25 @@ class ImageProxyService:
 
             key = hashlib.sha256(b"wizarr.image-proxy.v1\x00" + secret).digest()
             cls._cipher_key_cache[secret] = key
+            return key
+
+    @classmethod
+    def _nonce_key(cls) -> bytes:
+        """Derive the key for the deterministic (SIV-style) nonce PRF.
+
+        Kept separate from the AES key so the nonce derivation and the
+        encryption never share key material, matching the two-key structure of
+        SIV modes. Domain-separated with its own label.
+        """
+        secret = cls._get_secret()
+
+        with cls._cipher_key_lock:
+            cached = cls._nonce_key_cache.get(secret)
+            if cached is not None:
+                return cached
+
+            key = hashlib.sha256(b"wizarr.image-proxy.nonce.v1\x00" + secret).digest()
+            cls._nonce_key_cache[secret] = key
             return key
 
     @classmethod
@@ -223,13 +243,15 @@ class ImageProxyService:
 
         key = cls._cipher_key()
 
-        # Deterministic (SIV-style) nonce derived from the plaintext. Identical
-        # payloads therefore produce identical tokens, which keeps the token and
-        # image caches effective across renders, users and workers — the same
-        # property the previous bucketed HMAC scheme provided. A nonce is only
-        # ever reused for a byte-identical plaintext under the same key, so the
-        # AES-GCM nonce-reuse hazard does not apply.
-        nonce = hmac.new(key, payload_json, hashlib.sha256).digest()[: cls.NONCE_BYTES]
+        # Deterministic (SIV-style) nonce derived from the plaintext under a
+        # dedicated key. Identical payloads therefore produce identical tokens,
+        # which keeps the token and image caches effective across renders, users
+        # and workers — the same property the previous bucketed HMAC scheme
+        # provided. A nonce is only ever reused for a byte-identical plaintext
+        # under the same key, so the AES-GCM nonce-reuse hazard does not apply.
+        nonce = hmac.new(cls._nonce_key(), payload_json, hashlib.sha256).digest()[
+            : cls.NONCE_BYTES
+        ]
         ciphertext = AESGCM(key).encrypt(nonce, payload_json, None)
 
         token = base64.urlsafe_b64encode(nonce + ciphertext).decode().rstrip("=")
