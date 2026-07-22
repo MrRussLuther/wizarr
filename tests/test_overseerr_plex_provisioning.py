@@ -10,8 +10,14 @@ which is everything that first sign-in would have supplied.
 from unittest.mock import Mock, patch
 
 from app.services.companions import get_companion_client
-from app.services.companions.overseerr import OverseerrClient
-from app.services.ombi_client import provision_plex_user_on_connections
+from app.services.companions.overseerr import (
+    _PROVISION_BACKOFF_SECONDS,
+    OverseerrClient,
+)
+from app.services.ombi_client import (
+    has_plex_provisioning_connections,
+    provision_plex_user_on_connections,
+)
 
 
 def _connection(url="http://seerr.local:5055"):
@@ -78,6 +84,23 @@ def test_retries_while_the_share_is_not_visible_yet():
     assert post.call_count == 2
 
 
+def test_keeps_retrying_for_minutes_not_seconds():
+    """Measured against a real invite, plex.tv still reported no access ~8s in,
+    so a schedule that gives up in seconds never succeeds."""
+    client = OverseerrClient()
+
+    with (
+        patch("app.services.companions.overseerr.requests.post") as post,
+        patch("app.services.companions.overseerr.time.sleep") as sleep,
+    ):
+        post.return_value = Mock(ok=False, status_code=403)
+        client.provision_plex_user("t", _connection())
+
+    waited = sum(call[0][0] for call in sleep.call_args_list)
+    assert waited >= 300, f"only retried across {waited}s"
+    assert post.call_count == len(_PROVISION_BACKOFF_SECONDS) + 1
+
+
 def test_gives_up_immediately_on_errors_that_will_not_fix_themselves():
     client = OverseerrClient()
 
@@ -127,6 +150,22 @@ def test_only_opted_in_connections_are_queried(app):
     connection_model.query.filter_by.assert_called_once_with(
         media_server_id=7, provision_plex_users=True
     )
+
+
+def test_no_background_work_when_nothing_opted_in(app):
+    """Gates spawning the retry thread, so instances without a request system
+    pay nothing on every invite."""
+    with (
+        app.app_context(),
+        patch("app.services.ombi_client.Connection") as connection_model,
+    ):
+        connection_model.query.filter_by.return_value.count.return_value = 0
+
+        assert has_plex_provisioning_connections(7) is False
+
+        connection_model.query.filter_by.return_value.count.return_value = 1
+
+        assert has_plex_provisioning_connections(7) is True
 
 
 def test_connection_failure_is_reported_not_raised():

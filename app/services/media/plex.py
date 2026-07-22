@@ -1262,6 +1262,21 @@ class PlexClient(MediaClient):
 # ─── Invite & onboarding ────────────────────────────────────────────────
 
 
+def _provision_companions(app, token: str, server_id: int) -> None:
+    """Create the invited Plex user on opted-in companions, in the background.
+
+    Needs its own app context: the request that started it is long gone by the
+    time the later retries run.
+    """
+    with app.app_context():
+        try:
+            from app.services.ombi_client import provision_plex_user_on_connections
+
+            provision_plex_user_on_connections(token, server_id)
+        except Exception as exc:
+            logging.warning("Companion provisioning failed: %s", exc)
+
+
 def handle_oauth_token(app, token: str, code: str) -> None:
     with app.app_context():
         account = MyPlexAccount(token=token)
@@ -1317,17 +1332,26 @@ def handle_oauth_token(app, token: str, code: str) -> None:
 
             _invite_user(email, code, new_user.id, server)
 
-            # The share exists now, which is what request systems check before
-            # they will accept a sign-in, so create the user there while we still
-            # hold their token. Otherwise their first visit is a login screen and
-            # watchlist syncing has no token to work with until they get to it.
-            # Best effort: never let a companion failure break a good invite.
+            # Create the user on any request system that asked for it, while we
+            # still hold their token. Otherwise their first visit is a login
+            # screen and watchlist syncing has no token to work with until they
+            # get to it.
+            #
+            # Off the request thread: those services check the user can reach the
+            # media server, and plex.tv does not report the brand new share for
+            # some minutes, so this has to outlive the response. Best effort
+            # throughout - never let a companion failure break a good invite.
             try:
                 from app.services.ombi_client import (
-                    provision_plex_user_on_connections,
+                    has_plex_provisioning_connections,
                 )
 
-                provision_plex_user_on_connections(token, server_id)
+                if has_plex_provisioning_connections(server_id):
+                    threading.Thread(
+                        target=_provision_companions,
+                        args=(current_app._get_current_object(), token, server_id),  # type: ignore
+                        daemon=True,
+                    ).start()
             except Exception as exc:
                 logging.warning("Companion provisioning failed: %s", exc)
 
