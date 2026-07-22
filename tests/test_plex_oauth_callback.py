@@ -26,16 +26,34 @@ def test_callback_page_can_complete_the_join_on_its_own(client):
     assert 'name="token"' in html
 
 
-def test_only_closes_itself_when_it_is_really_a_popup(client):
-    """Closing a tab does not let us choose what the browser surfaces next, and
-    on a phone it can be any unrelated tab - which is exactly what happened in
-    testing. A full-size tab has to finish the job where the user is looking."""
+def test_hands_back_only_when_the_opener_is_visible(client):
+    """Whether to step aside is decided by whether the window that opened us is
+    still on screen, read from the opener's own visibilityState - not from the
+    device, the window size, or the pointer type, all of which misjudge cases
+    like a touchscreen laptop."""
     html = client.get("/plex/callback").get_data(as_text=True)
 
-    assert "isPopupWindow" in html
-    # The close must be gated on that check, never unconditional.
-    assert "opener && isPopupWindow()" in html
-    # And a tab that loses the race still needs somewhere to go.
+    assert 'visibilityState === "visible"' in html
+    assert "openerIsVisible()" in html
+    # It must be the opener's visibility, not this window's.
+    assert "window.opener" in html
+
+
+def test_callback_never_closes_itself(client):
+    """Closing a tab lets the browser surface whatever it likes, which is the
+    mobile failure this page exists to prevent. It only ever navigates; the
+    opener is what closes the desktop popup."""
+    html = client.get("/plex/callback").get_data(as_text=True)
+
+    assert "window.close()" not in html
+
+
+def test_a_tab_that_loses_the_race_still_reaches_the_wizard(client):
+    """If the opener redeems the invite first, the session is shared, so the
+    visible window follows it to the wizard rather than stranding the user."""
+    html = client.get("/plex/callback").get_data(as_text=True)
+
+    assert "goToWizard" in html
     assert "/wizard/" in html
 
 
@@ -71,8 +89,19 @@ def test_invite_page_asks_plex_to_forward_back(client):
     assert "/plex/callback" in html
 
 
-def test_invite_page_closes_the_plex_window(client):
-    """A popup left open on top of the wizard is the desktop half of the bug."""
+def test_invite_page_stashes_what_the_callback_needs(client):
+    """The callback can only finish the sign-in if the pin id was left behind
+    before the browser went to Plex."""
     html = client.post("/join", data={}).get_data(as_text=True)
 
-    assert "popup.close()" in html
+    assert "plexOAuthWrite" in html
+    assert "pinId" in html
+
+
+def test_only_one_context_redeems_the_invite(client):
+    """Both the invite page and the callback can end up holding the token, and
+    an invite must not be redeemed twice."""
+    html = client.post("/join", data={}).get_data(as_text=True)
+
+    assert 'plexOAuthClaim("opener")' in html
+    assert 'claimedBy === "callback"' in html
