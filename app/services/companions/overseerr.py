@@ -12,9 +12,12 @@ from app.models import Connection
 from .base import CompanionClient
 
 # The share Wizarr just created has to be visible to plex.tv before Overseerr
-# will accept the sign-in, and that is not always instant.
-_PROVISION_ATTEMPTS = 3
-_PROVISION_RETRY_SECONDS = 3
+# will accept the sign-in, and that takes appreciably longer than the share call
+# itself: measured against a real invite, plex.tv still reported no access ~8s
+# in, while the share was plainly there minutes later. Spread the retries over
+# several minutes rather than seconds. This runs off the request thread, so a
+# long tail costs the user nothing.
+_PROVISION_BACKOFF_SECONDS = (10, 30, 60, 120, 240)
 
 
 class OverseerrClient(CompanionClient):
@@ -114,9 +117,10 @@ class OverseerrClient(CompanionClient):
             }
 
         url = f"{connection.url.rstrip('/')}/api/v1/auth/plex"
+        total = len(_PROVISION_BACKOFF_SECONDS) + 1
         last_message = "Unknown error"
 
-        for attempt in range(1, _PROVISION_ATTEMPTS + 1):
+        for attempt in range(1, total + 1):
             try:
                 resp = requests.post(
                     url,
@@ -128,30 +132,35 @@ class OverseerrClient(CompanionClient):
                 logging.warning(
                     "Overseerr provisioning attempt %s/%s failed: %s",
                     attempt,
-                    _PROVISION_ATTEMPTS,
+                    total,
                     exc,
                 )
             else:
                 if resp.ok:
-                    logging.info("Overseerr provisioned Plex user via %s", url)
+                    logging.info(
+                        "Overseerr provisioned Plex user via %s on attempt %s",
+                        url,
+                        attempt,
+                    )
                     return {
                         "status": "success",
                         "message": "User created in Overseerr",
                     }
 
                 last_message = f"HTTP {resp.status_code}"
-                # 403 means the share is not visible to plex.tv yet. Anything
-                # else is not going to fix itself, so stop early.
+                # 403 is Overseerr saying the user cannot reach the media server,
+                # which right after an invite means plex.tv has not caught up yet.
+                # Anything else will not fix itself, so stop early.
                 if resp.status_code != 403:
                     break
                 logging.info(
                     "Overseerr does not see the share yet (attempt %s/%s)",
                     attempt,
-                    _PROVISION_ATTEMPTS,
+                    total,
                 )
 
-            if attempt < _PROVISION_ATTEMPTS:
-                time.sleep(_PROVISION_RETRY_SECONDS)
+            if attempt <= len(_PROVISION_BACKOFF_SECONDS):
+                time.sleep(_PROVISION_BACKOFF_SECONDS[attempt - 1])
 
         logging.warning("Overseerr provisioning gave up: %s", last_message)
         return {"status": "error", "message": last_message}

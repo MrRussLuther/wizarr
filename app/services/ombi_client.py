@@ -9,6 +9,7 @@ __all__ = [
     "delete_user",
     "delete_user_from_connections",
     "get_connection_for_server",
+    "has_plex_provisioning_connections",
     "invite_user_to_connections",
     "provision_plex_user_on_connections",
     "run_user_importer",
@@ -85,6 +86,16 @@ def invite_user_to_connections(
             )
 
     return results
+
+
+def has_plex_provisioning_connections(server_id: int) -> bool:
+    """Whether any companion for this server has opted in to provisioning."""
+    return (
+        Connection.query.filter_by(
+            media_server_id=server_id, provision_plex_users=True
+        ).count()
+        > 0
+    )
 
 
 def provision_plex_user_on_connections(auth_token: str, server_id: int) -> list[dict]:
