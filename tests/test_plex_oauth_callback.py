@@ -26,6 +26,19 @@ def test_callback_page_can_complete_the_join_on_its_own(client):
     assert 'name="token"' in html
 
 
+def test_only_closes_itself_when_it_is_really_a_popup(client):
+    """Closing a tab does not let us choose what the browser surfaces next, and
+    on a phone it can be any unrelated tab - which is exactly what happened in
+    testing. A full-size tab has to finish the job where the user is looking."""
+    html = client.get("/plex/callback").get_data(as_text=True)
+
+    assert "isPopupWindow" in html
+    # The close must be gated on that check, never unconditional.
+    assert "opener && isPopupWindow()" in html
+    # And a tab that loses the race still needs somewhere to go.
+    assert "/wizard/" in html
+
+
 def test_callback_page_loads_the_shared_oauth_helpers(client):
     """Guards against the template referencing a script that is not shipped."""
     html = client.get("/plex/callback").get_data(as_text=True)

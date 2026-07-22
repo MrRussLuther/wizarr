@@ -63,12 +63,38 @@
                    false);
           }
 
+          // The sign-in window was opened at 600x700. A real popup is much
+          // smaller than the screen around it, while on a phone it is a whole
+          // tab that fills the screen. Compare against the available screen
+          // rather than a fixed size so a big phone and a small laptop both
+          // classify correctly, and assume "not a popup" when the browser will
+          // not say: finishing in a window we could have closed is untidy,
+          // closing a tab we should have kept strands the user.
+          function isPopupWindow() {
+              try {
+                  if (!window.outerWidth || !window.outerHeight) {
+                      return false;
+                  }
+                  return (
+                      window.outerWidth <= screen.availWidth * 0.9 &&
+                      window.outerHeight <= screen.availHeight * 0.9
+                  );
+              } catch (e) {
+                  return false;
+              }
+          }
+
           async function finish() {
               if (!plexOAuthClaim("callback")) {
-                  // The invite page got the token first and is already going.
+                  // The invite page got the token first. On a phone it is behind
+                  // us and the user is looking at this tab, so follow it into the
+                  // wizard rather than telling them to go and find another tab.
                   stop("{{ _('All set') }}",
-                       "{{ _('Continuing in the window you started from. You can close this one.') }}",
+                       "{{ _('Taking you to the next step...') }}",
                        false);
+                  setTimeout(function () {
+                      window.location.href = "{{ url_for('wizard.start') }}";
+                  }, 2000);
                   return;
               }
 
@@ -95,8 +121,6 @@
                    true);
           }
 
-          // Hand back to the invite page if it is still open. It has been polling
-          // all along, so closing this window drops the user straight back onto it.
           let opener = null;
           try {
               opener = window.opener && !window.opener.closed ? window.opener : null;
@@ -105,8 +129,8 @@
           }
 
           if (opener) {
-              // Tells the invite page this window closed on purpose, so it keeps
-              // polling instead of treating it as the user giving up. Set
+              // Tells the invite page this window came back on purpose, so it
+              // keeps polling instead of treating it as the user giving up. Set
               // directly rather than through storage so it still works when
               // storage is unavailable and there is no stashed state at all.
               try {
@@ -114,6 +138,14 @@
               } catch (e) {
                   /* opener navigated somewhere we cannot touch */
               }
+          }
+
+          // Only get out of the way when we really are a popup sitting on top of
+          // the page that opened us. Closing a tab does not let us choose what
+          // the browser surfaces next - it picks, and on a phone that can be any
+          // unrelated tab - so a full-size tab finishes the job here instead,
+          // where the user is actually looking.
+          if (opener && isPopupWindow()) {
               window.close();
               // close() is a request, not a guarantee. If we are still here a
               // moment later, finish the job rather than sit on a dead page.
