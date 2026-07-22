@@ -180,10 +180,28 @@ class OverseerrClient(CompanionClient):
                         "message": "User created in Overseerr",
                     }
 
-                last_message = f"HTTP {resp.status_code}"
-                # 403 is Overseerr saying the user cannot reach the media server,
-                # which right after an invite means plex.tv has not caught up yet.
-                # Anything else will not fix itself, so stop early.
+                # Carry the body, not just the status: a bare "HTTP 403" reads
+                # like a rejected user when it can just as easily be a rejected
+                # request, and the two need completely different fixes.
+                body = (resp.text or "").strip()[:200]
+                last_message = f"HTTP {resp.status_code} {body}".strip()
+
+                if resp.status_code == 403 and "csrf" in body.lower():
+                    # Overseerr's CSRF cookies are Secure, so they are never sent
+                    # back over plain HTTP and the token can never validate. No
+                    # amount of retrying fixes a configuration problem.
+                    logging.warning(
+                        "Overseerr rejected the request as CSRF-invalid. Its CSRF "
+                        "cookies are Secure, so an http:// connection URL can "
+                        "never satisfy them - configure %s over https, or turn "
+                        "off CSRF protection in Overseerr.",
+                        base_url,
+                    )
+                    break
+
+                # A plain 403 is Overseerr saying the user cannot reach the media
+                # server, which right after an invite may just mean plex.tv has
+                # not published the share yet. Anything else will not fix itself.
                 if resp.status_code != 403:
                     break
                 logging.info(
