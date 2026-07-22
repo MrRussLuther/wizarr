@@ -32,6 +32,11 @@ def _connection(url="http://seerr.local:5055"):
     return conn
 
 
+def _resp(status=200, text=""):
+    """Overseerr replies carry a body we now read, so mocks must have one."""
+    return Mock(ok=200 <= status < 300, status_code=status, text=text)
+
+
 @contextmanager
 def _seerr(xsrf="csrf-token-value"):
     """Stand in for the HTTP session, handing back a primed CSRF cookie."""
@@ -51,7 +56,7 @@ def _seerr(xsrf="csrf-token-value"):
 
 def test_posts_the_plex_token_to_the_login_route():
     with _seerr() as (seerr, _):
-        seerr.post.return_value = Mock(ok=True, status_code=200)
+        seerr.post.return_value = _resp(200)
         result = OverseerrClient().provision_plex_user("plex-token-abc", _connection())
 
     assert result["status"] == "success"
@@ -64,7 +69,7 @@ def test_sends_the_csrf_token_overseerr_handed_us():
     """Without this every POST comes back 403 "invalid csrf token", whatever the
     payload. Overseerr applies CSRF to API callers, not just browsers."""
     with _seerr(xsrf="the-expected-token") as (seerr, _):
-        seerr.post.return_value = Mock(ok=True, status_code=200)
+        seerr.post.return_value = _resp(200)
         OverseerrClient().provision_plex_user("t", _connection())
 
     # The cookie only arrives on a response, so a GET has to come first.
@@ -76,7 +81,7 @@ def test_sends_the_csrf_token_overseerr_handed_us():
 def test_no_csrf_header_when_the_instance_does_not_use_one():
     """CSRF protection is optional; inventing a header would be wrong."""
     with _seerr(xsrf=None) as (seerr, _):
-        seerr.post.return_value = Mock(ok=True, status_code=200)
+        seerr.post.return_value = _resp(200)
         OverseerrClient().provision_plex_user("t", _connection())
 
     assert seerr.post.call_args[1]["headers"] == {}
@@ -85,7 +90,7 @@ def test_no_csrf_header_when_the_instance_does_not_use_one():
 def test_no_api_key_is_sent():
     """/api/v1/auth/plex is the public login route; an API key would be wrong."""
     with _seerr() as (seerr, _):
-        seerr.post.return_value = Mock(ok=True, status_code=200)
+        seerr.post.return_value = _resp(200)
         OverseerrClient().provision_plex_user("plex-token-abc", _connection())
 
     headers = seerr.post.call_args[1]["headers"]
@@ -95,7 +100,7 @@ def test_no_api_key_is_sent():
 
 def test_trailing_slash_on_the_url_does_not_double_up():
     with _seerr() as (seerr, _):
-        seerr.post.return_value = Mock(ok=True, status_code=200)
+        seerr.post.return_value = _resp(200)
         OverseerrClient().provision_plex_user(
             "t", _connection("http://seerr.local:5055/")
         )
@@ -108,8 +113,8 @@ def test_retries_while_the_share_is_not_visible_yet():
     """403 can mean plex.tv has not published the brand new share yet."""
     with _seerr() as (seerr, _):
         seerr.post.side_effect = [
-            Mock(ok=False, status_code=403),
-            Mock(ok=True, status_code=200),
+            _resp(403, "Access denied."),
+            _resp(200),
         ]
         result = OverseerrClient().provision_plex_user("t", _connection())
 
@@ -117,9 +122,24 @@ def test_retries_while_the_share_is_not_visible_yet():
     assert seerr.post.call_count == 2
 
 
+def test_does_not_retry_a_csrf_rejection():
+    """A CSRF 403 is the request being refused, not the user. Overseerr's CSRF
+    cookies are Secure, so an http:// URL can never satisfy them and retrying
+    just burns eight minutes before reporting the wrong thing."""
+    with _seerr() as (seerr, _):
+        seerr.post.return_value = _resp(403, '{"message":"invalid csrf token"}')
+        result = OverseerrClient().provision_plex_user("t", _connection())
+
+    assert seerr.post.call_count == 1
+    assert result["status"] == "error"
+    # The body has to survive into the message, or this looks like a rejected
+    # user and sends the next person debugging in the wrong direction.
+    assert "csrf" in result["message"].lower()
+
+
 def test_keeps_retrying_for_minutes_not_seconds():
     with _seerr() as (seerr, sleep):
-        seerr.post.return_value = Mock(ok=False, status_code=403)
+        seerr.post.return_value = _resp(403, "Access denied.")
         OverseerrClient().provision_plex_user("t", _connection())
 
     waited = sum(call[0][0] for call in sleep.call_args_list)
@@ -129,7 +149,7 @@ def test_keeps_retrying_for_minutes_not_seconds():
 
 def test_gives_up_immediately_on_errors_that_will_not_fix_themselves():
     with _seerr() as (seerr, _):
-        seerr.post.return_value = Mock(ok=False, status_code=500)
+        seerr.post.return_value = _resp(500, "Unable to authenticate.")
         result = OverseerrClient().provision_plex_user("t", _connection())
 
     assert result["status"] == "error"
