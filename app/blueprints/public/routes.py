@@ -95,6 +95,27 @@ def invite(code):
     return result.to_flask_response()
 
 
+# ─── Plex OAuth return target  /plex/callback ───────────────────────────────
+@public_bp.route("/plex/callback")
+@limiter.limit("50 per minute")
+def plex_callback():
+    """Page Plex forwards the browser back to once the user has signed in.
+
+    The invite page hands Plex a ``forwardUrl`` pointing here so the browser
+    leaves app.plex.tv by itself instead of stranding the user on Plex's
+    "you're all set" screen. Everything needed to finish the join (pin id,
+    client identifier, invite code) was stashed in localStorage before the
+    redirect, so this route needs no session state and reads no invitation
+    rows - the page itself decides whether to hand back to the window that
+    opened it or to complete the sign-in on its own.
+    """
+    name_setting = Settings.query.filter_by(key="server_name").first()
+    return render_template(
+        "plex-oauth-callback.html",
+        server_name=name_setting.value if name_setting else "Wizarr",
+    )
+
+
 # ─── Unified invitation processing ─────────────────────────────────────────
 @public_bp.route("/invitation/process", methods=["POST"])
 @limiter.limit("20 per minute")
