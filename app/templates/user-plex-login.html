@@ -275,6 +275,7 @@
       }
   </style>
   <script src="{{ url_for('static', filename='js/vendor/bowser.min.js', v=app_version) }}"></script> <!-- needed for plexHeaders -->
+  <script src="{{ url_for('static', filename='js/plex-oauth.js', v=app_version) }}"></script>
   <script>
       // Load movie posters for flowing grid background with progressive loading
       async function loadCinemaPosters() {
@@ -414,6 +415,15 @@
               headers: plexHeaders
           }).then(r => r.json())
 
+          // Stash everything /plex/callback needs to finish the join without us.
+          // On mobile the second window is a background tab, and the OS is free
+          // to freeze or discard this one while the user is over on plex.tv.
+          plexOAuthWrite({
+              pinId: pin.id,
+              clientId: plexHeaders['X-Plex-Client-Identifier'],
+              code: document.querySelector("#code")?.value || "",
+          });
+
           const params = new URLSearchParams({
               clientID: plexHeaders['X-Plex-Client-Identifier'],
               'context[device][product]': plexHeaders['X-Plex-Product'],
@@ -425,15 +435,43 @@
               'context[device][model]': plexHeaders['X-Plex-Model'],
               'context[device][screenResolution]': plexHeaders['X-Plex-Device-Screen-Resolution'],
               'context[device][layout]': 'desktop',
-              code: pin.code
+              code: pin.code,
+              // Sends the browser back to us once Plex is done, instead of
+              // leaving the user parked on Plex's own "all set" screen. Path
+              // from Flask so a prefixed mount still resolves, origin from the
+              // browser so it is the public one the user actually came in on.
+              forwardUrl: window.location.origin + "{{ url_for('public.plex_callback') }}"
           });
 
-          popup.location.href = `https://app.plex.tv/auth/#!?${params}`;
+          const authUrl = `https://app.plex.tv/auth/#!?${params}`;
 
-          const authToken = await new Promise((resolve, reject) => {
-              const currentTime = Date.now()
+          if (popup) {
+              popup.location.href = authUrl;
+          } else {
+              // Popup blocked. Sign in in this tab; forwardUrl brings us back.
+              window.location.href = authUrl;
+              return;
+          }
+
+          const authToken = await new Promise((resolve) => {
+              const deadline = Date.now() + 300000;
               const interval = setInterval(async () => {
-                  if (popup.closed) return location.reload();
+                  // The callback page took over because this window looked gone.
+                  if (plexOAuthRead()?.claimedBy === "callback") {
+                      clearInterval(interval);
+                      return;
+                  }
+
+                  // Only a popup closed *without* passing through /plex/callback
+                  // means the user backed out. One that returned first set this
+                  // flag on the way past, and its token is already on the way.
+                  if (popup.closed && !window.wizarrPlexReturned) return location.reload();
+
+                  if (Date.now() > deadline) {
+                      clearInterval(interval);
+                      return location.reload();
+                  }
+
                   const resp = await fetch(`https://plex.tv/api/v2/pins/${pin.id}`, {
                       headers: plexHeaders
                   }).then(r => r.json())
@@ -446,6 +484,13 @@
                   }
               }, 1000)
           });
+
+          if (!plexOAuthClaim("opener")) return;
+          plexOAuthClear();
+
+          if (!popup.closed) popup.close();
+          window.focus();
+
           document.querySelector("#token").value = authToken;
 
           document.forms[0].submit();
