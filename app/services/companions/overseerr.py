@@ -11,13 +11,42 @@ from app.models import Connection
 
 from .base import CompanionClient
 
-# The share Wizarr just created has to be visible to plex.tv before Overseerr
-# will accept the sign-in, and that takes appreciably longer than the share call
-# itself: measured against a real invite, plex.tv still reported no access ~8s
-# in, while the share was plainly there minutes later. Spread the retries over
-# several minutes rather than seconds. This runs off the request thread, so a
-# long tail costs the user nothing.
+# Overseerr checks the user can reach the media server before it will accept
+# them, and plex.tv does not necessarily publish a brand new share the instant it
+# is created. How long that takes has not been measured here, so retry over a few
+# minutes rather than assuming it is immediate. This runs off the request thread,
+# so a long tail costs the invited user nothing.
 _PROVISION_BACKOFF_SECONDS = (10, 30, 60, 120, 240)
+
+
+def _open_session(base_url: str) -> tuple[requests.Session, dict[str, str]]:
+    """Open a session carrying Overseerr's CSRF cookie, if it wants one.
+
+    Overseerr can be configured to reject state-changing requests that do not
+    echo its XSRF cookie back as a header, and that applies to API callers, not
+    just browsers - without it every POST comes back 403 "invalid csrf token"
+    no matter how valid the payload is. A GET first hands us the cookie.
+    Instances with the protection off simply never set one, and we send no
+    header.
+
+    Returns:
+        The session to post with, and the headers it needs
+    """
+    session = requests.Session()
+    headers: dict[str, str] = {}
+
+    try:
+        session.get(f"{base_url}/api/v1/status", timeout=10)
+    except Exception as exc:
+        # Not fatal on its own: let the POST report the real failure.
+        logging.debug("Could not prime Overseerr CSRF cookie: %s", exc)
+        return session, headers
+
+    token = session.cookies.get("XSRF-TOKEN")
+    if token:
+        headers["X-XSRF-TOKEN"] = token
+
+    return session, headers
 
 
 class OverseerrClient(CompanionClient):
@@ -116,15 +145,19 @@ class OverseerrClient(CompanionClient):
                 "message": "No Overseerr URL configured",
             }
 
-        url = f"{connection.url.rstrip('/')}/api/v1/auth/plex"
+        base_url = connection.url.rstrip("/")
+        url = f"{base_url}/api/v1/auth/plex"
         total = len(_PROVISION_BACKOFF_SECONDS) + 1
         last_message = "Unknown error"
 
+        session, headers = _open_session(base_url)
+
         for attempt in range(1, total + 1):
             try:
-                resp = requests.post(
+                resp = session.post(
                     url,
                     json={"authToken": auth_token},
+                    headers=headers,
                     timeout=10,
                 )
             except Exception as exc:
