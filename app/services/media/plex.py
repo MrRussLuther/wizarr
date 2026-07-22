@@ -1313,6 +1313,20 @@ def handle_oauth_token(app, token: str, code: str) -> None:
 
             _invite_user(email, code, new_user.id, server)
 
+            # The share exists now, which is what request systems check before
+            # they will accept a sign-in, so create the user there while we still
+            # hold their token. Otherwise their first visit is a login screen and
+            # watchlist syncing has no token to work with until they get to it.
+            # Best effort: never let a companion failure break a good invite.
+            try:
+                from app.services.ombi_client import (
+                    provision_plex_user_on_connections,
+                )
+
+                provision_plex_user_on_connections(token, server_id)
+            except Exception as exc:
+                logging.warning("Companion provisioning failed: %s", exc)
+
             # Mark invitation as used for this server
             if inv:
                 from app.services.invites import mark_server_used
