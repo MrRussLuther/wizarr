@@ -1,5 +1,5 @@
 """
-Overseerr/Jellyseerr companion client implementation.
+Seerr (formerly Overseerr/Jellyseerr) companion client implementation.
 """
 
 import logging
@@ -11,7 +11,7 @@ from app.models import Connection
 
 from .base import CompanionClient
 
-# Overseerr checks the user can reach the media server before it will accept
+# Seerr checks the user can reach the media server before it will accept
 # them, and plex.tv does not necessarily publish a brand new share the instant it
 # is created. How long that takes has not been measured here, so retry over a few
 # minutes rather than assuming it is immediate. This runs off the request thread,
@@ -20,9 +20,9 @@ _PROVISION_BACKOFF_SECONDS = (10, 30, 60, 120, 240)
 
 
 def _open_session(base_url: str) -> tuple[requests.Session, dict[str, str]]:
-    """Open a session carrying Overseerr's CSRF cookie, if it wants one.
+    """Open a session carrying Seerr's CSRF cookie, if it wants one.
 
-    Overseerr can be configured to reject state-changing requests that do not
+    Seerr can be configured to reject state-changing requests that do not
     echo its XSRF cookie back as a header, and that applies to API callers, not
     just browsers - without it every POST comes back 403 "invalid csrf token"
     no matter how valid the payload is. A GET first hands us the cookie.
@@ -39,7 +39,7 @@ def _open_session(base_url: str) -> tuple[requests.Session, dict[str, str]]:
         session.get(f"{base_url}/api/v1/status", timeout=10)
     except Exception as exc:
         # Not fatal on its own: let the POST report the real failure.
-        logging.debug("Could not prime Overseerr CSRF cookie: %s", exc)
+        logging.debug("Could not prime Seerr CSRF cookie: %s", exc)
         return session, headers
 
     token = session.cookies.get("XSRF-TOKEN")
@@ -49,8 +49,8 @@ def _open_session(base_url: str) -> tuple[requests.Session, dict[str, str]]:
     return session, headers
 
 
-class OverseerrClient(CompanionClient):
-    """Client for integrating with Overseerr/Jellyseerr (info-only)."""
+class SeerrClient(CompanionClient):
+    """Client for integrating with Seerr (info-only)."""
 
     @property
     def requires_api_call(self) -> bool:
@@ -58,7 +58,7 @@ class OverseerrClient(CompanionClient):
 
     @property
     def display_name(self) -> str:
-        return "Overseerr/Jellyseerr"
+        return "Seerr"
 
     def invite_user(
         self,
@@ -68,7 +68,7 @@ class OverseerrClient(CompanionClient):
         password: str = "",  # noqa: ARG002
     ) -> dict[str, str]:
         """
-        Overseerr connections are info-only, no actual API calls needed.
+        Seerr connections are info-only, no actual API calls needed.
 
         Args:
             username: Username to invite (unused - info-only)
@@ -81,12 +81,12 @@ class OverseerrClient(CompanionClient):
         """
         return {
             "status": "info_only",
-            "message": "Overseerr auto-imports users automatically",
+            "message": "Seerr auto-imports users automatically",
         }
 
     def delete_user(self, username: str, connection: Connection) -> dict[str, str]:  # noqa: ARG002
         """
-        Overseerr connections are info-only, no deletion needed.
+        Seerr connections are info-only, no deletion needed.
 
         Args:
             username: Username to delete (unused - info-only)
@@ -97,12 +97,12 @@ class OverseerrClient(CompanionClient):
         """
         return {
             "status": "info_only",
-            "message": "Overseerr users managed automatically",
+            "message": "Seerr users managed automatically",
         }
 
     def test_connection(self, connection: Connection) -> dict[str, str]:  # noqa: ARG002
         """
-        Test connection for Overseerr (info-only).
+        Test connection for Seerr (info-only).
 
         Args:
             connection: Connection object with URL and API key (unused - info-only)
@@ -112,16 +112,16 @@ class OverseerrClient(CompanionClient):
         """
         return {
             "status": "info_only",
-            "message": "Overseerr connections are informational only - no API testing required",
+            "message": "Seerr connections are informational only - no API testing required",
         }
 
     def provision_plex_user(
         self, auth_token: str, connection: Connection
     ) -> dict[str, str]:
         """
-        Create the Overseerr account for a freshly invited Plex user.
+        Create the Seerr account for a freshly invited Plex user.
 
-        Overseerr does not import Plex users in the background; it creates them
+        Seerr does not import Plex users in the background; it creates them
         the first time they sign in. That leaves an invited user having to go and
         log in by hand before anything knows who they are, and before watchlist
         syncing has a token to work with. Posting their Plex token to the same
@@ -129,7 +129,7 @@ class OverseerrClient(CompanionClient):
 
         Needs no API key: /api/v1/auth/plex is the public login route. It creates
         the user only when they can already reach the media server and
-        newPlexLogin is enabled, so this cannot grant access Overseerr would have
+        newPlexLogin is enabled, so this cannot grant access Seerr would have
         refused. The session cookie it returns is discarded.
 
         Args:
@@ -142,7 +142,7 @@ class OverseerrClient(CompanionClient):
         if not connection.url:
             return {
                 "status": "skipped",
-                "message": "No Overseerr URL configured",
+                "message": "No Seerr URL configured",
             }
 
         base_url = connection.url.rstrip("/")
@@ -163,7 +163,7 @@ class OverseerrClient(CompanionClient):
             except Exception as exc:
                 last_message = str(exc)
                 logging.warning(
-                    "Overseerr provisioning attempt %s/%s failed: %s",
+                    "Seerr provisioning attempt %s/%s failed: %s",
                     attempt,
                     total,
                     exc,
@@ -171,13 +171,13 @@ class OverseerrClient(CompanionClient):
             else:
                 if resp.ok:
                     logging.info(
-                        "Overseerr provisioned Plex user via %s on attempt %s",
+                        "Seerr provisioned Plex user via %s on attempt %s",
                         url,
                         attempt,
                     )
                     return {
                         "status": "success",
-                        "message": "User created in Overseerr",
+                        "message": "User created in Seerr",
                     }
 
                 # Carry the body, not just the status: a bare "HTTP 403" reads
@@ -187,25 +187,25 @@ class OverseerrClient(CompanionClient):
                 last_message = f"HTTP {resp.status_code} {body}".strip()
 
                 if resp.status_code == 403 and "csrf" in body.lower():
-                    # Overseerr's CSRF cookies are Secure, so they are never sent
+                    # Seerr's CSRF cookies are Secure, so they are never sent
                     # back over plain HTTP and the token can never validate. No
                     # amount of retrying fixes a configuration problem.
                     logging.warning(
-                        "Overseerr rejected the request as CSRF-invalid. Its CSRF "
+                        "Seerr rejected the request as CSRF-invalid. Its CSRF "
                         "cookies are Secure, so an http:// connection URL can "
                         "never satisfy them - configure %s over https, or turn "
-                        "off CSRF protection in Overseerr.",
+                        "off CSRF protection in Seerr.",
                         base_url,
                     )
                     break
 
-                # A plain 403 is Overseerr saying the user cannot reach the media
+                # A plain 403 is Seerr saying the user cannot reach the media
                 # server, which right after an invite may just mean plex.tv has
                 # not published the share yet. Anything else will not fix itself.
                 if resp.status_code != 403:
                     break
                 logging.info(
-                    "Overseerr does not see the share yet (attempt %s/%s)",
+                    "Seerr does not see the share yet (attempt %s/%s)",
                     attempt,
                     total,
                 )
@@ -213,5 +213,5 @@ class OverseerrClient(CompanionClient):
             if attempt <= len(_PROVISION_BACKOFF_SECONDS):
                 time.sleep(_PROVISION_BACKOFF_SECONDS[attempt - 1])
 
-        logging.warning("Overseerr provisioning gave up: %s", last_message)
+        logging.warning("Seerr provisioning gave up: %s", last_message)
         return {"status": "error", "message": last_message}

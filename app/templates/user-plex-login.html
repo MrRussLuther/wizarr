@@ -394,7 +394,7 @@
       // nanoid package, for generating client-identifier in plexHeaders
       let nanoid = (t = 21) => crypto.getRandomValues(new Uint8Array(t)).reduce(((t, e) => t += (e &= 63) < 36 ? e.toString(36) : e < 62 ? (e - 26).toString(36).toUpperCase() : e > 62 ? "-" : "_"), "");
 
-      // adapted from overseerr
+      // adapted from seerr
       async function oauth() {
           let popup = window.open("", "Plex", 'width=600, height=700, toolbar=no, menubar=no');
           const browser = window.bowser.getParser(window.navigator.userAgent);

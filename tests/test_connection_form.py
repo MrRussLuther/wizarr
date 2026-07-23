@@ -1,6 +1,6 @@
 """The connection form has to submit the fields it requires.
 
-Issue #1343: creating an Overseerr/Jellyseerr connection silently did nothing.
+Issue #1343: creating a Seerr connection silently did nothing.
 Clicking Create Connection returned HTTP 200 and no row appeared.
 """
 
@@ -12,7 +12,7 @@ MODAL = (
 
 
 def test_required_fields_are_not_rendered_disabled():
-    """Connection Name and Media Server were disabled for the overseerr type.
+    """Connection Name and Media Server were disabled for the seerr type.
 
     Disabled inputs are not submitted, and both fields carry DataRequired, so
     validate_on_submit() failed on fields the user had no way to fill. The route
@@ -21,7 +21,7 @@ def test_required_fields_are_not_rendered_disabled():
     """
     modal = MODAL.read_text()
 
-    assert "disabled=(form.connection_type.data == 'overseerr')" not in modal
+    assert "disabled=(form.connection_type.data == 'seerr')" not in modal
 
 
 def test_every_form_field_that_is_required_is_editable():

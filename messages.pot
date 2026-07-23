@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-20 06:25+0000\n"
+"POT-Creation-Date: 2026-07-22 21:46-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -135,12 +135,12 @@ msgstr ""
 msgid "An internal error has occurred."
 msgstr ""
 
-#: app/blueprints/admin/routes.py:333
+#: app/blueprints/admin/routes.py:334
 #: app/templates/admin/user_details_modal.html:56
 msgid "Unknown"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:336
+#: app/blueprints/admin/routes.py:337
 #: app/templates/admin/user_details_modal.html:70
 #: app/templates/modals/invite.html:69
 #: app/templates/tables/invite_card.html:115
@@ -149,30 +149,30 @@ msgstr ""
 msgid "Never"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:409 app/templates/tables/invite_card.html:5
+#: app/blueprints/admin/routes.py:410 app/templates/tables/invite_card.html:5
 msgid "Expired"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:417
+#: app/blueprints/admin/routes.py:418
 #, python-format
 msgid "in %(n)d d"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:419
+#: app/blueprints/admin/routes.py:420
 msgid "in 1 d"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:421
+#: app/blueprints/admin/routes.py:422
 #, python-format
 msgid "in %(n)d h"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:423
+#: app/blueprints/admin/routes.py:424
 #, python-format
 msgid "in %(n)d m"
 msgstr ""
 
-#: app/blueprints/admin/routes.py:424
+#: app/blueprints/admin/routes.py:425
 msgid "soon"
 msgstr ""
 
@@ -242,21 +242,25 @@ msgstr ""
 msgid "LDAP authentication failed"
 msgstr ""
 
-#: app/blueprints/auth/routes.py:112
+#: app/blueprints/auth/routes.py:115
 msgid "Invalid username or password"
 msgstr ""
 
-#: app/blueprints/auth/routes.py:136
+#: app/blueprints/auth/routes.py:140
 msgid "No pending 2FA authentication"
 msgstr ""
 
-#: app/blueprints/auth/routes.py:150 app/templates/login.html:203
+#: app/blueprints/auth/routes.py:155
+msgid "Two-factor authentication required"
+msgstr ""
+
+#: app/blueprints/auth/routes.py:171 app/templates/login.html:203
 #: app/templates/login.html:268 app/templates/login.html:272
 msgid "Authentication failed"
 msgstr ""
 
 #: app/blueprints/connections/routes.py:52
-#: app/blueprints/connections/routes.py:188
+#: app/blueprints/connections/routes.py:190
 msgid "Connection type is required"
 msgstr ""
 
@@ -270,38 +274,38 @@ msgid "Connection test successful!"
 msgstr ""
 
 #: app/blueprints/connections/routes.py:78
-#: app/blueprints/connections/routes.py:204
+#: app/blueprints/connections/routes.py:206
 msgid "Unknown connection type"
 msgstr ""
 
-#: app/blueprints/connections/routes.py:95
+#: app/blueprints/connections/routes.py:96
 msgid "Connection created successfully!"
 msgstr ""
 
-#: app/blueprints/connections/routes.py:124
+#: app/blueprints/connections/routes.py:126
 msgid "Connection updated successfully!"
 msgstr ""
 
-#: app/blueprints/connections/routes.py:146
+#: app/blueprints/connections/routes.py:148
 msgid "Connection deleted successfully!"
 msgstr ""
 
-#: app/blueprints/connections/routes.py:165
+#: app/blueprints/connections/routes.py:167
 msgid "Please refresh the page and try again (CSRF token expired)"
 msgstr ""
 
-#: app/blueprints/connections/routes.py:170
+#: app/blueprints/connections/routes.py:172
 #, python-format
 msgid "Invalid form data: %(errors)s"
 msgstr ""
 
-#: app/blueprints/public/routes.py:181 app/blueprints/public/routes.py:198
+#: app/blueprints/public/routes.py:202 app/blueprints/public/routes.py:219
 msgid ""
 "There was an issue setting up your access. Please contact your server "
 "admin."
 msgstr ""
 
-#: app/blueprints/settings/routes.py:166 app/blueprints/settings/routes.py:269
+#: app/blueprints/settings/routes.py:166 app/blueprints/settings/routes.py:272
 msgid "Settings saved successfully!"
 msgstr ""
 
@@ -331,50 +335,50 @@ msgstr ""
 msgid "Library scan failed"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:293
+#: app/blueprints/settings/routes.py:296
 #, python-brace-format
 msgid "Successfully cleaned {count} expired user(s)."
 msgstr ""
 
-#: app/blueprints/settings/routes.py:298
+#: app/blueprints/settings/routes.py:301
 msgid "No expired users found to clean."
 msgstr ""
 
-#: app/blueprints/settings/routes.py:321 app/blueprints/settings/routes.py:350
+#: app/blueprints/settings/routes.py:324 app/blueprints/settings/routes.py:353
 #: app/templates/settings/general.html:178
 msgid ""
 "Are you sure you want to clean all expired users? This action cannot be "
 "undone."
 msgstr ""
 
-#: app/blueprints/settings/routes.py:323 app/blueprints/settings/routes.py:352
+#: app/blueprints/settings/routes.py:326 app/blueprints/settings/routes.py:355
 #: app/templates/settings/general.html:167
 #: app/templates/settings/general.html:195
 msgid "Clean Expired Users"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:328
+#: app/blueprints/settings/routes.py:331
 #, python-brace-format
 msgid "Failed to clean expired users: {error}"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:407
+#: app/blueprints/settings/routes.py:410
 msgid "LDAP configuration saved successfully"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:481
+#: app/blueprints/settings/routes.py:484
 msgid "LDAP not configured or disabled"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:491
+#: app/blueprints/settings/routes.py:494
 msgid "No groups found in LDAP"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:547
+#: app/blueprints/settings/routes.py:550
 msgid "LDAP is not configured"
 msgstr ""
 
-#: app/blueprints/settings/routes.py:556
+#: app/blueprints/settings/routes.py:559
 #, python-format
 msgid "Failed to list LDAP users: %(error)s"
 msgstr ""
@@ -616,7 +620,7 @@ msgid "Allow Live TV"
 msgstr ""
 
 #: app/forms/settings.py:36
-msgid "Overseerr/Ombi URL"
+msgid "Seerr/Ombi URL"
 msgstr ""
 
 #: app/forms/settings.py:38
@@ -1074,6 +1078,46 @@ msgstr ""
 
 #: app/templates/password-reset-success.html:37
 msgid "Log in to your media server with your username and new password."
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:16
+msgid "Signing you in"
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:18
+msgid "Finishing up with Plex. This only takes a moment."
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:23
+msgid "Back to your invitation"
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:61
+msgid "Nothing to finish"
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:62
+msgid "Open your invitation link again to sign in with Plex."
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:105
+msgid "All set"
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:106
+msgid "Taking you to the next step..."
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:118
+msgid "Sign-in failed"
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:136
+msgid "That took too long"
+msgstr ""
+
+#: app/templates/plex-oauth-callback.html:137
+msgid "We did not hear back from Plex. Please try signing in again."
 msgstr ""
 
 #: app/templates/profile.html:17
@@ -1616,7 +1660,7 @@ msgstr ""
 #: app/templates/components/passkey_add_form.html:24
 #: app/templates/components/passkey_register.html:19
 #: app/templates/modals/bundle-add-steps.html:35
-#: app/templates/modals/connection-form.html:162
+#: app/templates/modals/connection-form.html:181
 #: app/templates/modals/create-admin.html:48
 #: app/templates/modals/create-api-key.html:82
 #: app/templates/modals/create-notification-agent.html:163
@@ -1631,7 +1675,7 @@ msgstr ""
 #: app/templates/modals/wizard-preset-form.html:59
 #: app/templates/modals/wizard-simple-step-form.html:48
 #: app/templates/modals/wizard-step-form.html:139
-#: app/templates/settings/connections/form.html:183
+#: app/templates/settings/connections/form.html:191
 #: app/templates/settings/wizard/bundle_form.html:18
 #: app/templates/settings/wizard/form.html:38
 #: app/templates/settings/wizard/preset_form.html:38
@@ -1758,42 +1802,42 @@ msgstr ""
 
 #: app/templates/modals/connection-form.html:76
 #: app/templates/settings/connections/form.html:125
-msgid "Overseerr/Jellyseerr Information"
+msgid "Seerr Information"
 msgstr ""
 
 #: app/templates/modals/connection-form.html:78
-#: app/templates/settings/connections/form.html:127
 msgid ""
-"Overseerr and Jellyseerr automatically import new users by default. No "
-"API connection is required for Wizarr integration."
+"Seerr creates a user the first time that user signs in, so someone you "
+"invite has no account there until they visit and log in themselves."
 msgstr ""
 
 #: app/templates/modals/connection-form.html:82
-#: app/templates/settings/connections/form.html:130
-msgid "To enable auto-import:"
-msgstr ""
-
-#: app/templates/modals/connection-form.html:84
 msgid ""
-"Go to your Overseerr/Jellyseerr Settings → Users → Enable 'Auto-approve "
-"new users' and 'Import Jellyfin/Plex users'"
+"Set the Service URL below and turn on account creation to have Wizarr do "
+"that for them during the invite. An API key is not needed."
 msgstr ""
 
-#: app/templates/modals/connection-form.html:139
-msgid "Testing connection..."
-msgstr ""
-
-#: app/templates/modals/connection-form.html:147
-#: app/templates/settings/connections/form.html:188
-msgid "Create Connection"
-msgstr ""
-
-#: app/templates/modals/connection-form.html:149
-#: app/templates/settings/connections/form.html:190
-msgid "Update Connection"
+#: app/templates/modals/connection-form.html:98
+msgid ""
+"Must be https if the service has CSRF protection enabled, which sets its "
+"cookies Secure."
 msgstr ""
 
 #: app/templates/modals/connection-form.html:158
+msgid "Testing connection..."
+msgstr ""
+
+#: app/templates/modals/connection-form.html:166
+#: app/templates/settings/connections/form.html:196
+msgid "Create Connection"
+msgstr ""
+
+#: app/templates/modals/connection-form.html:168
+#: app/templates/settings/connections/form.html:198
+msgid "Update Connection"
+msgstr ""
+
+#: app/templates/modals/connection-form.html:177
 #: app/templates/settings/ldap.html:99
 msgid "Test Connection"
 msgstr ""
@@ -2237,7 +2281,7 @@ msgstr ""
 
 #: app/templates/modals/wizard-preset-form.html:44
 #: app/templates/settings/wizard/preset_form.html:22
-msgid "URL to your Overseerr/Ombi instance"
+msgid "URL to your Seerr/Ombi instance"
 msgstr ""
 
 #: app/templates/modals/wizard-preset-form.html:61
@@ -2374,7 +2418,7 @@ msgid "Media Server"
 msgstr ""
 
 #: app/templates/settings/connections.html:53
-msgid "Overseerr (Info)"
+msgid "Seerr (Info)"
 msgstr ""
 
 #: app/templates/settings/connections.html:65
@@ -2711,8 +2755,18 @@ msgstr ""
 msgid "Which media server should trigger invitations to this external service"
 msgstr ""
 
+#: app/templates/settings/connections/form.html:127
+msgid ""
+"Seerr automatically imports new users by default. No API connection is "
+"required for Wizarr integration."
+msgstr ""
+
+#: app/templates/settings/connections/form.html:130
+msgid "To enable auto-import:"
+msgstr ""
+
 #: app/templates/settings/connections/form.html:132
-msgid "Open your Overseerr/Jellyseerr admin panel"
+msgid "Open your Seerr admin panel"
 msgstr ""
 
 #: app/templates/settings/connections/form.html:133
